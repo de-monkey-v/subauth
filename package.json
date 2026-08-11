@@ -1,0 +1,60 @@
+{
+  "name": "subauth",
+  "version": "0.1.0",
+  "description": "Subscription auth for AI providers — use a personal ChatGPT subscription as an OpenAI-compatible credential. Personal, single-account use only.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./login": {
+      "types": "./dist/login.d.ts",
+      "import": "./dist/login.mjs",
+      "require": "./dist/login.js",
+      "default": "./dist/login.js"
+    },
+    "./ai-sdk": {
+      "types": "./dist/ai-sdk.d.ts",
+      "import": "./dist/ai-sdk.mjs",
+      "require": "./dist/ai-sdk.js",
+      "default": "./dist/ai-sdk.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "login",
+    "ai-sdk",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:consumer": "node test/consumer/ac1-refresh.cjs && node test/consumer/ac2-entries.mjs && node test/consumer/ac3-codex-fetch.cjs && node test/consumer/ac4-no-leak.cjs && node test/consumer/ac5-node10.cjs && node test/consumer/ac6-dual-instance.mjs",
+    "verify": "pnpm typecheck && pnpm build && pnpm test && pnpm test:consumer"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.28.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "24.10.2",
+    "tsup": "8.5.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.9"
+  }
+}

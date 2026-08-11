@@ -1,0 +1,30 @@
+{
+  "scenarios": [
+    {
+      "added_at": "2026-08-11T01:58:27+00:00",
+      "class": "blackbox",
+      "entrypoint": "node test/consumer/ac6-dual-instance.mjs",
+      "id": "dual-module-instance",
+      "journey": "한 프로세스에서 subauth를 require()와 import() 양쪽으로 로드한 뒤 같은 계정의 토큰을 동시에 요청한다",
+      "oracle": "토큰 교환이 정확히 1회 일어나고 세션이 살아남는다 (2회면 서버가 rotation 재사용으로 세션을 revoke한다)",
+      "origin": "escaped-defect",
+      "paths": [
+        "dist",
+        "src/auth.ts"
+      ]
+    },
+    {
+      "added_at": "2026-08-11T01:58:27+00:00",
+      "class": "blackbox",
+      "entrypoint": "createChatGPTAuth(...).getFreshAccess()",
+      "id": "session-destroying-200",
+      "journey": "토큰 엔드포인트가 200을 주면서 refresh_token 이나 expires_in 을 이상한 타입으로 돌려준다",
+      "oracle": "저장된 세션이 여전히 사용 가능하다 — refresh 는 비어있지 않은 문자열, expires 는 유한한 미래 시각",
+      "origin": "escaped-defect",
+      "paths": [
+        "src/protocol.ts"
+      ]
+    }
+  ],
+  "version": 1
+}

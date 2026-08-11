@@ -1,0 +1,16 @@
+{
+  "//": "Mirrors pr-review-bot's compiler settings: CommonJS output, node10 resolution (which never reads the exports map), and no DOM lib.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "out",
+    "rootDir": "."
+  },
+  "include": ["consumer.ts"]
+}

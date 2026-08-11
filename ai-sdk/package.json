@@ -1,0 +1,8 @@
+{
+  "//": "node10 resolution shim: consumers with moduleResolution:Node never read the root exports map.",
+  "name": "subauth-ai-sdk-shim",
+  "private": true,
+  "main": "../dist/ai-sdk.js",
+  "module": "../dist/ai-sdk.mjs",
+  "types": "../dist/ai-sdk.d.ts"
+}

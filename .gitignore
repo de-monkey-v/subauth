@@ -1,3 +1,10 @@
 node_modules/
 *.log
 .DS_Store
+out/
+
+# Token stores hold a live refresh token. Never commit one.
+*.openai-oauth.json
+*.openai-oauth.json.*.tmp
+
+# dist/ is intentionally NOT ignored: github: installs must need no build step.

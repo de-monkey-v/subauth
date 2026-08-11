@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    /* DOM is deliberately absent: the strictest consumer (pr-review-bot) compiles
+       with lib ["ES2022"] only. Anything this package needs from fetch/Headers
+       must come from @types/node's undici globals, not from lib.dom. */
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "declaration": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true
+  },
+  "include": ["src", "test", "tsup.config.ts", "vitest.config.mts"],
+  /* Consumer fixtures compile against the *published* package under their own
+     tsconfig, from a directory where `subauth` resolves. They are deliberately
+     unresolvable from here. */
+  "exclude": ["test/consumer"]
+}
