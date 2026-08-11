@@ -69,3 +69,14 @@ export class LoginFailedError extends SubauthError {
     super("login_failed", message);
   }
 }
+
+/**
+ * A store refused to write because doing so would corrupt a file it shares with
+ * another program. Failing here is deliberate: the alternative is leaving that
+ * program unable to read its own credentials.
+ */
+export class StoreWriteRefusedError extends SubauthError {
+  constructor(message: string) {
+    super("store_write_refused", message);
+  }
+}

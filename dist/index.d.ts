@@ -1,6 +1,44 @@
-export { a as AccessGrant, A as AccessSource, C as ChatGPTAuth, b as ChatGPTAuthOptions, c as CodexFetchOptions, d as createChatGPTAuth, e as createCodexFetch } from './codex-fetch-BwMht0DX.js';
-import { T as TokenStore, O as OAuthTokens } from './types-MT7M_0Y9.js';
-export { A as AuthStatus, C as Clock, D as DeviceAuth, a as DevicePoll, F as FetchLike, b as FetchLikeResponse, L as Logger, S as Sleep } from './types-MT7M_0Y9.js';
+export { a as AccessGrant, A as AccessSource, C as ChatGPTAuth, b as ChatGPTAuthOptions, c as CodexFetchOptions, d as createChatGPTAuth, e as createCodexFetch } from './codex-fetch-C8yZEsG_.js';
+import { C as Clock, T as TokenStore, O as OAuthTokens } from './types-DNqSt5Ln.js';
+export { A as AuthStatus, D as DeviceAuth, a as DevicePoll, F as FetchLike, b as FetchLikeResponse, L as Logger, S as Sleep } from './types-DNqSt5Ln.js';
+
+/**
+ * Token store backed by the Codex CLI's own `auth.json`.
+ *
+ * The point is to reuse an existing login instead of asking for another one —
+ * and, more importantly, to share the *same file* with the CLI rather than
+ * copying the credentials somewhere else.
+ *
+ * Copying would look simpler and be worse: OAuth refresh tokens rotate, so two
+ * files holding the same account's credentials each invalidate the other the
+ * first time either one refreshes. Sharing the file means both sides observe
+ * each rotation, which is exactly what the read-through contract and the
+ * rotation-recovery path in `createChatGPTAuth` are built on.
+ *
+ * ```ts
+ * const store = codexAuthStore(path.join(os.homedir(), ".codex", "auth.json"));
+ * ```
+ *
+ * **Direction matters: run `codex login` first.** This adapts a session the CLI
+ * created and updates it in place. It will not create one from nothing —
+ * `id_token` is a required field of the CLI's record and a login response does
+ * not always carry one, so a write without it is refused rather than producing
+ * a file the CLI cannot parse. To hold a session this package logs into itself,
+ * use `fileTokenStore` with a path of your own.
+ *
+ * The format records no expiry, so the deadline comes from the access token's
+ * own `exp` claim; a token that is not a decodable JWT is treated as logged out
+ * rather than assumed fresh.
+ *
+ * Concurrency: writes are atomic, but a read-modify-write cannot be atomic
+ * against another process without a lock. If the CLI writes between this
+ * store's read and its rename, the CLI's write is the one that loses. Measured
+ * at roughly 0.25% of writes under deliberate contention; both sides re-read on
+ * the next refresh, so the loser recovers rather than breaking.
+ */
+declare function codexAuthStore(filePath: string, options?: {
+    now?: Clock;
+}): TokenStore;
 
 /**
  * File-backed token store with owner-only permissions.
@@ -138,5 +176,13 @@ declare class DeviceAuthError extends SubauthError {
 declare class LoginFailedError extends SubauthError {
     constructor(message: string);
 }
+/**
+ * A store refused to write because doing so would corrupt a file it shares with
+ * another program. Failing here is deliberate: the alternative is leaving that
+ * program unable to read its own credentials.
+ */
+declare class StoreWriteRefusedError extends SubauthError {
+    constructor(message: string);
+}
 
-export { API_ORIGINATOR, AUTHORIZE_ORIGINATOR, CLIENT_ID, CODEX_BASE_URL, DEFAULT_CALLBACK_PORT, DeviceAuthError, ISSUER, InvalidGrantError, LoginFailedError, NotAuthenticatedError, OAuthTokens, PERSONAL_USE_NOTICE, type Provider, REFRESH_MARGIN_MS, RefreshTokenMissingError, SubauthError, TokenRequestError, TokenStore, fileTokenStore, generatePKCE, memoryTokenStore, providerOf };
+export { API_ORIGINATOR, AUTHORIZE_ORIGINATOR, CLIENT_ID, CODEX_BASE_URL, Clock, DEFAULT_CALLBACK_PORT, DeviceAuthError, ISSUER, InvalidGrantError, LoginFailedError, NotAuthenticatedError, OAuthTokens, PERSONAL_USE_NOTICE, type Provider, REFRESH_MARGIN_MS, RefreshTokenMissingError, StoreWriteRefusedError, SubauthError, TokenRequestError, TokenStore, codexAuthStore, fileTokenStore, generatePKCE, memoryTokenStore, providerOf };

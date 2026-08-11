@@ -8,6 +8,15 @@ type OAuthTokens = {
     access: string;
     refresh: string;
     accountId?: string;
+    /**
+     * The OIDC id token, when the provider returned one.
+     *
+     * Unused by this package's own request path — the account id is already
+     * extracted — but carried so a store sharing its file with another program
+     * can keep it in step with the access and refresh tokens. Dropping it leaves
+     * a previous account's identity next to the current account's credentials.
+     */
+    idToken?: string;
     /** Absolute expiry, epoch milliseconds. */
     expires: number;
 };

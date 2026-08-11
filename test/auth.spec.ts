@@ -306,7 +306,7 @@ describe("getFreshAccess — rotation loss recovery", () => {
     });
 
     await expect(auth.getFreshAccess()).resolves.toMatchObject({ access: "access-new" });
-    expect(logger.lines.some((line) => line.includes("could not be persisted"))).toBe(true);
+    expect(logger.lines.some((line) => line.includes("could not be saved"))).toBe(true);
   });
 });
 

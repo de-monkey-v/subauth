@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { resolveStorePath } from "./store-path";
 import type { OAuthTokens, TokenStore } from "./types";
 
 function isTokens(value: unknown): value is OAuthTokens {
@@ -16,7 +17,8 @@ function isTokens(value: unknown): value is OAuthTokens {
   return (
     typeof candidate.access === "string" &&
     typeof candidate.refresh === "string" &&
-    typeof candidate.expires === "number"
+    typeof candidate.expires === "number" &&
+    Number.isFinite(candidate.expires)
   );
 }
 
@@ -33,7 +35,7 @@ function isTokens(value: unknown): value is OAuthTokens {
  * sibling process wrote, and caching here would disable it.
  */
 export function fileTokenStore(filePath: string): TokenStore {
-  const resolved = path.resolve(filePath);
+  const resolved = resolveStorePath(filePath);
 
   // Defined as a closure rather than a method so the returned functions survive
   // being destructured off the store — the way consumers import them.

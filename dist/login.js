@@ -98,7 +98,8 @@ function decodeClaims(token) {
   const payload = token?.split(".")[1];
   if (!payload) return void 0;
   try {
-    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return decoded && typeof decoded === "object" ? decoded : void 0;
   } catch {
     return void 0;
   }
@@ -233,10 +234,13 @@ function toTokens(response, now, previous) {
   const rotated = typeof response.refresh_token === "string" && response.refresh_token !== "" ? response.refresh_token : void 0;
   const seconds = Number(response.expires_in);
   const lifetime = Number.isFinite(seconds) && seconds > 0 ? seconds : 3600;
+  const accountId = extractAccountId(response) ?? previous?.accountId;
+  const idToken = typeof response.id_token === "string" && response.id_token !== "" ? response.id_token : previous?.idToken ;
   return {
     access: response.access_token,
     refresh: rotated ?? previous?.refresh ?? "",
-    accountId: extractAccountId(response) ?? previous?.accountId,
+    ...accountId ? { accountId } : {},
+    ...idToken ? { idToken } : {},
     expires: now() + lifetime * 1e3
   };
 }

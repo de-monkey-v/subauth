@@ -238,10 +238,26 @@ export function toTokens(
   const seconds = Number(response.expires_in);
   const lifetime = Number.isFinite(seconds) && seconds > 0 ? seconds : 3600;
 
+  const accountId = extractAccountId(response) ?? previous?.accountId;
+
+  // An id token identifies an account, so it is only inherited when the account
+  // did not change. Carrying a previous account's id token forward would pair
+  // it with another account's credentials, and anything reading identity from
+  // it — a CLI sharing the same store — would report the wrong user.
+  const sameAccount =
+    previous?.accountId === undefined || accountId === undefined || previous.accountId === accountId;
+  const idToken =
+    typeof response.id_token === "string" && response.id_token !== ""
+      ? response.id_token
+      : sameAccount
+        ? previous?.idToken
+        : undefined;
+
   return {
     access: response.access_token,
     refresh: rotated ?? previous?.refresh ?? "",
-    accountId: extractAccountId(response) ?? previous?.accountId,
+    ...(accountId ? { accountId } : {}),
+    ...(idToken ? { idToken } : {}),
     expires: now() + lifetime * 1000,
   };
 }

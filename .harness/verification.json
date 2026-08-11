@@ -24,6 +24,42 @@
       "paths": [
         "src/protocol.ts"
       ]
+    },
+    {
+      "added_at": "2026-08-11T04:52:32+00:00",
+      "class": "blackbox",
+      "entrypoint": "codexAuthStore(path).write(...)",
+      "id": "codex-auth-id-token-required",
+      "journey": "codex CLI 로 로그인된 상태에서 subauth 가 id_token 없는 세션을 같은 auth.json 에 쓴다 (다른 계정 로그인, 또는 파일 신규 생성)",
+      "oracle": "write 가 StoreWriteRefusedError 로 거부하고 파일이 그대로 남아 codex login status 가 계속 로그인을 보고한다 (id_token 은 CLI 의 필수 필드라 없으면 파일 전체 파싱이 실패하고 같은 파일의 API 키까지 못 쓰게 된다)",
+      "origin": "escaped-defect",
+      "paths": [
+        "src/store-codex.ts"
+      ]
+    },
+    {
+      "added_at": "2026-08-11T04:52:32+00:00",
+      "class": "blackbox",
+      "entrypoint": "codexAuthStore(path).clear()",
+      "id": "codex-auth-clear-preserves-file",
+      "journey": "refresh token 이 revoke 되어 subauth 가 자동으로 clear() 를 호출한다",
+      "oracle": "auth.json 파일이 삭제되지 않고 tokens 만 null 이 되며 OPENAI_API_KEY 등 다른 자격증명이 남는다",
+      "origin": "escaped-defect",
+      "paths": [
+        "src/store-codex.ts"
+      ]
+    },
+    {
+      "added_at": "2026-08-11T05:07:56+00:00",
+      "class": "blackbox",
+      "entrypoint": "node test/consumer/ac9-codex-cli-roundtrip.cjs",
+      "id": "codex-auth-clear-falls-back-to-api-key",
+      "journey": "API 키가 함께 들어 있는 auth.json 에서 ChatGPT 세션을 clear() 한 뒤 codex CLI 를 실행한다",
+      "oracle": "CLI 가 'Logged in using an API key' 로 폴백한다 — auth_mode 를 남기면 'Logged in using ChatGPT' 라고 거짓 보고하면서 모든 요청이 401 이 되고 API 키를 못 쓴다",
+      "origin": "escaped-defect",
+      "paths": [
+        "src/store-codex.ts"
+      ]
     }
   ],
   "version": 1

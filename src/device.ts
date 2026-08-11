@@ -1,5 +1,5 @@
 import { PERSONAL_USE_NOTICE } from "./constants";
-import { DeviceAuthError } from "./errors";
+import { DeviceAuthError, StoreWriteRefusedError } from "./errors";
 import { exchangeCode, toTokens, type ProtocolConfig } from "./protocol";
 import { scrubSecrets } from "./redact";
 import type { Clock, DeviceAuth, DevicePoll, Logger, TokenStore } from "./types";
@@ -119,9 +119,15 @@ export async function pollDeviceToken(
     store.write(tokens);
     return { status: "complete", accountId: tokens.accountId };
   } catch (error) {
-    // The authorization code is single-use and has now been spent, so this
-    // cannot be retried — the user has to start a new device login.
     const reason = scrubSecrets(error instanceof Error ? error.message : String(error));
+    // A store that refuses this session will refuse it again, so "log in again"
+    // would send the user around a loop that cannot terminate. Report what is
+    // actually wrong instead.
+    if (error instanceof StoreWriteRefusedError) {
+      return { status: "error", message: `the session could not be stored: ${reason}` };
+    }
+    // Otherwise the authorization code is single-use and has now been spent, so
+    // this attempt cannot be retried — a new device login is required.
     return { status: "error", message: `token exchange failed, log in again: ${reason.slice(0, 120)}` };
   }
 }

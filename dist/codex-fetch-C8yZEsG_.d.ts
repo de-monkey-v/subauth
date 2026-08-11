@@ -1,4 +1,4 @@
-import { A as AuthStatus, D as DeviceAuth, a as DevicePoll, T as TokenStore, F as FetchLike, C as Clock, S as Sleep, L as Logger } from './types-MT7M_0Y9.mjs';
+import { A as AuthStatus, D as DeviceAuth, a as DevicePoll, T as TokenStore, F as FetchLike, C as Clock, S as Sleep, L as Logger } from './types-DNqSt5Ln.js';
 
 /** The only value in this package that carries a token out to the caller. */
 type AccessGrant = {

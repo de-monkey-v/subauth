@@ -174,10 +174,17 @@ export function createChatGPTAuth(options: ChatGPTAuthOptions): ChatGPTAuth {
     try {
       store.write(next);
     } catch (error) {
-      // The server has already rotated the refresh token by this point, so
-      // throwing here would turn one disk error into a permanently dead
-      // session. The new access token is good for this process's lifetime.
-      logger.warn?.(`refreshed token could not be persisted: ${errorText(error)}`);
+      // Nothing good is available here, so say exactly what happened. The
+      // server rotated the refresh token before this write was attempted, which
+      // means the copy still on disk is already dead: throwing would end a
+      // session that still works in memory, and staying silent would hide that
+      // the next process has to log in again. This process keeps going; the
+      // damage is to the *stored* session, and only a re-login repairs it.
+      logger.warn?.(
+        "the refreshed session could not be saved, so the rotated refresh token is lost — " +
+          "this process continues with the new access token, but the stored session is now " +
+          `stale and the next one will need a fresh login: ${errorText(error)}`,
+      );
     }
     return { access: next.access, accountId: next.accountId };
   }

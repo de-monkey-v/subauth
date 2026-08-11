@@ -13,6 +13,7 @@
 export { createChatGPTAuth } from "./auth";
 export type { AccessGrant, ChatGPTAuth, ChatGPTAuthOptions } from "./auth";
 
+export { codexAuthStore } from "./store-codex";
 export { fileTokenStore } from "./store-file";
 export { memoryTokenStore } from "./store-memory";
 
@@ -40,6 +41,7 @@ export {
   LoginFailedError,
   NotAuthenticatedError,
   RefreshTokenMissingError,
+  StoreWriteRefusedError,
   SubauthError,
   TokenRequestError,
 } from "./errors";

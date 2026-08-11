@@ -11,6 +11,8 @@ type TokenClaims = {
   chatgpt_account_id?: string;
   organizations?: Array<{ id?: string }>;
   "https://api.openai.com/auth"?: { chatgpt_account_id?: string };
+  /** Standard JWT expiry, seconds since the epoch. */
+  exp?: number;
 };
 
 /** Decode a JWT payload segment. Returns undefined for anything unparseable. */
@@ -18,10 +20,22 @@ function decodeClaims(token?: string): TokenClaims | undefined {
   const payload = token?.split(".")[1];
   if (!payload) return undefined;
   try {
-    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as TokenClaims;
+    const decoded: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return decoded && typeof decoded === "object" ? (decoded as TokenClaims) : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Read a JWT's expiry as epoch milliseconds.
+ *
+ * Needed by stores whose on-disk format records no expiry of its own — the
+ * token itself is then the only place the deadline exists.
+ */
+export function expiryOf(token?: string): number | undefined {
+  const exp = decodeClaims(token)?.exp;
+  return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : undefined;
 }
 
 function accountIdFrom(token?: string): string | undefined {
@@ -39,8 +53,8 @@ function accountIdFrom(token?: string): string | undefined {
  * access token because a refresh response does not always return an id token.
  */
 export function extractAccountId(tokens: {
-  id_token?: string;
-  access_token?: string;
+  id_token?: string | undefined;
+  access_token?: string | undefined;
 }): string | undefined {
   return accountIdFrom(tokens.id_token) ?? accountIdFrom(tokens.access_token);
 }

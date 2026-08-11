@@ -25,6 +25,9 @@ These are not preferences. A change that breaks one of them is wrong.
 5. **`TokenStore` is synchronous and read-through.** Consumers call `exists()`
    from synchronous paths, and rotation recovery depends on observing another
    process's write. Changing either is a breaking change.
+   `codexAuthStore` additionally must preserve every field it does not own and
+   must never copy credentials to a second file — two files holding one
+   account's tokens revoke each other on the first rotation.
 6. **Entry isolation.** `subauth` must not pull in `node:http` or
    `node:child_process`; those belong to `subauth/login`. Enforced by
    `test/dist.spec.ts` and `test/consumer/ac2-entries.mjs`.

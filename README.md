@@ -44,6 +44,58 @@ const response = await fetch("https://chatgpt.com/backend-api/codex/responses", 
 });
 ```
 
+### Reusing an existing Codex CLI login
+
+If you already ran `codex login`, there is no second login to do:
+
+```ts
+import path from "node:path";
+import os from "node:os";
+import { codexAuthStore, createChatGPTAuth } from "subauth";
+
+const auth = createChatGPTAuth({
+  store: codexAuthStore(
+    path.join(process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"), "auth.json"),
+  ),
+});
+```
+
+`codexAuthStore` reads and writes the CLI's own file format in place, preserving
+everything it does not own — that file also holds an API key and other
+providers' credentials, and none of it is this package's to touch.
+
+**Share the file; do not copy it.** Refresh tokens rotate, so two files holding
+the same account's credentials invalidate each other the first time either side
+refreshes. Pointing both at one file is what lets each observe the other's
+rotation — the same property the read-through store contract exists for.
+
+Three things worth knowing:
+
+- **Run `codex login` first.** This adapts an existing CLI session. It can
+  create the file, but the CLI also reads an id token from it for the account it
+  displays, so a file first written here may be usable by this package and not
+  by the CLI.
+- **The format records no expiry**, so the deadline comes from the access
+  token's own `exp` claim. A token that is not a decodable JWT is treated as
+  logged out rather than assumed fresh. An API-key-mode file (`tokens: null`)
+  likewise reads as logged out.
+- **`logout()` removes only the ChatGPT session**, leaving the API key and other
+  entries in place — after which the CLI falls back to that key. It is also
+  called automatically when a refresh token turns out to be revoked, which is
+  why it must neither delete the file nor throw.
+
+Two limits worth knowing before you rely on this:
+
+- **No file lock.** Under deliberate contention roughly 0.15–0.25% of writes
+  overwrite one the CLI made in the same instant. Both sides re-read on the next
+  refresh, but if the lost write was a *rotation*, the surviving token is
+  already dead and the next call needs a login.
+- **A failed write costs the stored session.** The server rotates the refresh
+  token before the write is attempted, so if saving fails — full disk, read-only
+  directory — the rotated token is gone. The current process keeps working with
+  its access token and a warning is logged; the next one has to log in again.
+  This is inherent to rotation, not specific to this store.
+
 Logging in, once, from a CLI:
 
 ```ts
@@ -95,6 +147,7 @@ carry comes back as `model is not supported`.
 | `createChatGPTAuth(options)` | Session handle: `getFreshAccess`, `status`, `exists`, `logout`, device flow |
 | `createCodexFetch(auth, options?)` | `fetch` wrapper that injects credentials and the Codex request contract |
 | `fileTokenStore(path)` / `memoryTokenStore(initial?)` | Token persistence |
+| `codexAuthStore(path)` | Token persistence in the Codex CLI's own `auth.json` format |
 | `providerOf(modelId)` | Model id → `"openai" \| "anthropic" \| "google" \| null` |
 | `subauth/login` → `loginWithBrowser` | Loopback PKCE browser login |
 | `subauth/ai-sdk` → `createChatGPTOpenAIProvider` | AI SDK provider bridge |

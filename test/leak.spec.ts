@@ -111,7 +111,7 @@ describe("token leakage", () => {
 
     await auth.getFreshAccess();
     assertNoSecrets(logger.lines.join("\n"));
-    expect(logger.lines.some((l) => l.includes("could not be persisted"))).toBe(true);
+    expect(logger.lines.some((l) => l.includes("could not be saved"))).toBe(true);
   });
 
   it("does not leak tokens through a device poll error", async () => {

@@ -1,4 +1,4 @@
-import { unlinkSync, mkdirSync, writeFileSync, renameSync, chmodSync, existsSync, readFileSync } from 'fs';
+import { unlinkSync, mkdirSync, writeFileSync, renameSync, chmodSync, existsSync, readFileSync, realpathSync } from 'fs';
 import path from 'path';
 import { randomUUID, randomBytes, createHash } from 'crypto';
 
@@ -55,6 +55,11 @@ var LoginFailedError = class extends SubauthError {
     super("login_failed", message);
   }
 };
+var StoreWriteRefusedError = class extends SubauthError {
+  constructor(message) {
+    super("store_write_refused", message);
+  }
+};
 
 // src/redact.ts
 var REDACTED = "[REDACTED]";
@@ -106,10 +111,15 @@ function decodeClaims(token) {
   const payload = token?.split(".")[1];
   if (!payload) return void 0;
   try {
-    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return decoded && typeof decoded === "object" ? decoded : void 0;
   } catch {
     return void 0;
   }
+}
+function expiryOf(token) {
+  const exp = decodeClaims(token)?.exp;
+  return typeof exp === "number" && Number.isFinite(exp) ? exp * 1e3 : void 0;
 }
 function accountIdFrom(token) {
   const claims = decodeClaims(token);
@@ -236,10 +246,14 @@ function toTokens(response, now, previous) {
   const rotated = typeof response.refresh_token === "string" && response.refresh_token !== "" ? response.refresh_token : void 0;
   const seconds = Number(response.expires_in);
   const lifetime = Number.isFinite(seconds) && seconds > 0 ? seconds : 3600;
+  const accountId = extractAccountId(response) ?? previous?.accountId;
+  const sameAccount = previous?.accountId === void 0 || accountId === void 0 || previous.accountId === accountId;
+  const idToken = typeof response.id_token === "string" && response.id_token !== "" ? response.id_token : sameAccount ? previous?.idToken : void 0;
   return {
     access: response.access_token,
     refresh: rotated ?? previous?.refresh ?? "",
-    accountId: extractAccountId(response) ?? previous?.accountId,
+    ...accountId ? { accountId } : {},
+    ...idToken ? { idToken } : {},
     expires: now() + lifetime * 1e3
   };
 }
@@ -310,6 +324,9 @@ async function pollDeviceToken(config, store, now, deviceAuthId, userCode) {
     return { status: "complete", accountId: tokens.accountId };
   } catch (error) {
     const reason = scrubSecrets(error instanceof Error ? error.message : String(error));
+    if (error instanceof StoreWriteRefusedError) {
+      return { status: "error", message: `the session could not be stored: ${reason}` };
+    }
     return { status: "error", message: `token exchange failed, log in again: ${reason.slice(0, 120)}` };
   }
 }
@@ -388,7 +405,9 @@ function createChatGPTAuth(options) {
     try {
       store.write(next);
     } catch (error) {
-      logger.warn?.(`refreshed token could not be persisted: ${errorText(error)}`);
+      logger.warn?.(
+        `the refreshed session could not be saved, so the rotated refresh token is lost \u2014 this process continues with the new access token, but the stored session is now stale and the next one will need a fresh login: ${errorText(error)}`
+      );
     }
     return { access: next.access, accountId: next.accountId };
   }
@@ -420,13 +439,131 @@ function createChatGPTAuth(options) {
     pollDeviceToken: (deviceAuthId, userCode) => pollDeviceToken(config, store, now, deviceAuthId, userCode)
   };
 }
+function resolveStorePath(filePath) {
+  const absolute = path.resolve(filePath);
+  if (!existsSync(absolute)) return absolute;
+  try {
+    return realpathSync(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+// src/store-codex.ts
+function readFile(resolved) {
+  if (!existsSync(resolved)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(resolved, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function writeAtomic(resolved, content) {
+  mkdirSync(path.dirname(resolved), { recursive: true, mode: 448 });
+  const tmp = `${resolved}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(content, null, 2), { mode: 384 });
+    renameSync(tmp, resolved);
+  } catch (error) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+    }
+    throw error;
+  }
+  try {
+    chmodSync(resolved, 384);
+  } catch {
+  }
+}
+function codexAuthStore(filePath, options = {}) {
+  const resolved = resolveStorePath(filePath);
+  const now = options.now ?? Date.now;
+  function read() {
+    const file = readFile(resolved);
+    const tokens = file?.tokens;
+    if (!tokens || typeof tokens !== "object") return null;
+    const { access_token: access, refresh_token: refresh, id_token: idToken } = tokens;
+    if (typeof access !== "string" || access === "") return null;
+    if (typeof refresh !== "string" || refresh === "") return null;
+    const expires = expiryOf(access);
+    if (expires === void 0) return null;
+    const stored = tokens.account_id;
+    const accountId = typeof stored === "string" && stored !== "" ? stored : (
+      // Older files omit the field; the claim is authoritative anyway, and
+      // without an account id the backend rejects the request with no clue why.
+      extractAccountId({
+        id_token: typeof idToken === "string" ? idToken : void 0,
+        access_token: access
+      })
+    );
+    return {
+      access,
+      refresh,
+      ...accountId ? { accountId } : {},
+      ...typeof idToken === "string" && idToken !== "" ? { idToken } : {},
+      expires
+    };
+  }
+  return {
+    // Same identity rule as fileTokenStore, so opening one path through both
+    // stores still de-duplicates concurrent refreshes.
+    key: resolved,
+    read,
+    write(next) {
+      const existing = readFile(resolved) ?? {};
+      const previous = (existing.tokens ?? void 0) || void 0;
+      const refresh = next.refresh || previous?.refresh_token;
+      const accountId = next.accountId ?? previous?.account_id;
+      const sameAccount = previous?.account_id === void 0 || accountId === void 0 || previous.account_id === accountId;
+      const idToken = next.idToken ?? (sameAccount ? previous?.id_token : void 0);
+      if (typeof idToken !== "string" || idToken === "") {
+        throw new StoreWriteRefusedError(
+          "Refusing to write a Codex auth.json without an id token: the Codex CLI requires that field and would fail to read the file, including any other credentials in it. Run `codex login` first, or use fileTokenStore with a path of your own."
+        );
+      }
+      if (typeof refresh !== "string" || refresh === "") {
+        throw new StoreWriteRefusedError(
+          "Refusing to write a Codex auth.json without a refresh token: the session would be unusable and the previous refresh token would be lost."
+        );
+      }
+      writeAtomic(resolved, {
+        ...existing,
+        auth_mode: existing.auth_mode ?? "chatgpt",
+        tokens: {
+          // Spread first so fields the CLI adds in a later version survive; the
+          // ones this package owns are then written over them.
+          ...previous,
+          id_token: idToken,
+          access_token: next.access,
+          refresh_token: refresh,
+          ...accountId ? { account_id: accountId } : {}
+        },
+        last_refresh: new Date(now()).toISOString()
+      });
+    },
+    clear() {
+      try {
+        const existing = readFile(resolved);
+        if (!existing) return;
+        const { tokens: _tokens, last_refresh: _lastRefresh, auth_mode: _authMode, ...rest } = existing;
+        writeAtomic(resolved, { ...rest, tokens: null });
+      } catch {
+      }
+    },
+    exists() {
+      return read() !== null;
+    }
+  };
+}
 function isTokens(value) {
   if (!value || typeof value !== "object") return false;
   const candidate = value;
-  return typeof candidate.access === "string" && typeof candidate.refresh === "string" && typeof candidate.expires === "number";
+  return typeof candidate.access === "string" && typeof candidate.refresh === "string" && typeof candidate.expires === "number" && Number.isFinite(candidate.expires);
 }
 function fileTokenStore(filePath) {
-  const resolved = path.resolve(filePath);
+  const resolved = resolveStorePath(filePath);
   function read() {
     if (!existsSync(resolved)) return null;
     try {
@@ -555,4 +692,4 @@ function providerOf(model) {
   return null;
 }
 
-export { API_ORIGINATOR, AUTHORIZE_ORIGINATOR, CLIENT_ID, CODEX_BASE_URL, DEFAULT_CALLBACK_PORT, DeviceAuthError, ISSUER, InvalidGrantError, LoginFailedError, NotAuthenticatedError, PERSONAL_USE_NOTICE, REFRESH_MARGIN_MS, RefreshTokenMissingError, SubauthError, TokenRequestError, createChatGPTAuth, createCodexFetch, fileTokenStore, generatePKCE, memoryTokenStore, providerOf };
+export { API_ORIGINATOR, AUTHORIZE_ORIGINATOR, CLIENT_ID, CODEX_BASE_URL, DEFAULT_CALLBACK_PORT, DeviceAuthError, ISSUER, InvalidGrantError, LoginFailedError, NotAuthenticatedError, PERSONAL_USE_NOTICE, REFRESH_MARGIN_MS, RefreshTokenMissingError, StoreWriteRefusedError, SubauthError, TokenRequestError, codexAuthStore, createChatGPTAuth, createCodexFetch, fileTokenStore, generatePKCE, memoryTokenStore, providerOf };
