@@ -8,3 +8,8 @@ out/
 *.openai-oauth.json.*.tmp
 
 # dist/ is intentionally NOT ignored: github: installs must need no build step.
+
+# Working notes for whoever picks this up next. Local by design: they name other
+# repositories, absolute paths on this machine, and defects still open here —
+# none of which belongs in a public repository.
+.handoff.md
