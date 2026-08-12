@@ -17,9 +17,18 @@ export type ProtocolConfig = {
   userAgent: string;
   clientId: string;
   issuer: string;
+  /** Deadline for a single token request. See `DEFAULT_TIMEOUT_MS`. */
+  timeoutMs: number;
 };
 
 export const DEFAULT_USER_AGENT = "subauth";
+
+/**
+ * Token requests are a single round trip against one endpoint. Ten seconds is
+ * far past a healthy response and still short enough that a sibling waiting on
+ * the result has not given up — which is the constraint that actually sets it.
+ */
+export const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Adapt the platform `fetch` to the narrow `FetchLike` this package injects. */
 export const globalFetchAdapter: FetchLike = async (url, init) => {
@@ -38,6 +47,7 @@ export function resolveProtocolConfig(partial: Partial<ProtocolConfig> = {}): Pr
     userAgent: partial.userAgent ?? DEFAULT_USER_AGENT,
     clientId: partial.clientId ?? CLIENT_ID,
     issuer: partial.issuer ?? ISSUER,
+    timeoutMs: partial.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   };
 }
 
@@ -136,6 +146,11 @@ async function tokenRequest(
     body.get("code") ?? undefined,
   ];
 
+  // A refresh with no deadline is worse than a slow one. A sibling process that
+  // hits `invalid_grant` waits a bounded time for this result to land on disk;
+  // past that it gives up. An unbounded request can therefore still be in
+  // flight when its own outcome has stopped being useful to anyone, so the
+  // timeout is what keeps that recovery window meaningful.
   const response = await config.fetch(`${config.issuer}/oauth/token`, {
     method: "POST",
     headers: {
@@ -143,6 +158,7 @@ async function tokenRequest(
       "User-Agent": config.userAgent,
     },
     body: body.toString(),
+    signal: AbortSignal.timeout(config.timeoutMs),
   });
 
   if (!response.ok) {
@@ -165,9 +181,12 @@ async function tokenRequest(
     // contract — callers branch on `code` — and its message quotes the body.
     throw new TokenRequestError(
       response.status,
+      // `sent` here too: a decoder error quotes the bytes it choked on, and a
+      // proxy that echoed our request body puts the refresh token among them.
       `token endpoint returned a non-JSON response: ${scrubDetail(
         error instanceof Error ? error.message : String(error),
         120,
+        sent,
       )}`,
     );
   }

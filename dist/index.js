@@ -1,8 +1,8 @@
 'use strict';
 
+var crypto = require('crypto');
 var fs = require('fs');
 var path = require('path');
-var crypto = require('crypto');
 
 function _interopDefault (e) { return e && e.__esModule ? e : { default: e }; }
 
@@ -146,6 +146,7 @@ function extractAccountId(tokens) {
 
 // src/protocol.ts
 var DEFAULT_USER_AGENT = "subauth";
+var DEFAULT_TIMEOUT_MS = 1e4;
 var globalFetchAdapter = async (url, init) => {
   const response = await globalThis.fetch(url, init);
   return {
@@ -160,7 +161,8 @@ function resolveProtocolConfig(partial = {}) {
     fetch: partial.fetch ?? globalFetchAdapter,
     userAgent: partial.userAgent ?? DEFAULT_USER_AGENT,
     clientId: partial.clientId ?? CLIENT_ID,
-    issuer: partial.issuer ?? ISSUER
+    issuer: partial.issuer ?? ISSUER,
+    timeoutMs: partial.timeoutMs ?? DEFAULT_TIMEOUT_MS
   };
 }
 async function safeText(response) {
@@ -204,7 +206,8 @@ async function tokenRequest(config, body) {
       "Content-Type": "application/x-www-form-urlencoded",
       "User-Agent": config.userAgent
     },
-    body: body.toString()
+    body: body.toString(),
+    signal: AbortSignal.timeout(config.timeoutMs)
   });
   if (!response.ok) {
     const detail = await safeText(response);
@@ -219,9 +222,12 @@ async function tokenRequest(config, body) {
   } catch (error) {
     throw new TokenRequestError(
       response.status,
+      // `sent` here too: a decoder error quotes the bytes it choked on, and a
+      // proxy that echoed our request body puts the refresh token among them.
       `token endpoint returned a non-JSON response: ${scrubDetail(
         error instanceof Error ? error.message : String(error),
-        120
+        120,
+        sent
       )}`
     );
   }
@@ -380,7 +386,7 @@ function createChatGPTAuth(options) {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
   const logger = options.logger ?? {};
-  const rotationRetry = options.rotationRetry ?? { attempts: 8, delayMs: 400 };
+  const rotationRetry = options.rotationRetry ?? { attempts: 30, delayMs: 400 };
   const config = resolveProtocolConfig(options);
   function isUsable(tokens) {
     return now() < tokens.expires - REFRESH_MARGIN_MS;
@@ -404,7 +410,6 @@ function createChatGPTAuth(options) {
       if (error instanceof InvalidGrantError) {
         const recovered = await recoverFromRotation(previous);
         if (recovered) return recovered;
-        store.clear();
       }
       throw error;
     }
@@ -434,10 +439,15 @@ function createChatGPTAuth(options) {
     const inFlight = inFlightRegistry();
     const pending = inFlight.get(store.key);
     if (pending) return signal ? detachOnAbort(pending, signal) : pending;
-    const started = refreshOnce(tokens).finally(() => {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const started = gate.then(() => refreshOnce(tokens)).finally(() => {
       if (inFlight.get(store.key) === started) inFlight.delete(store.key);
     });
     inFlight.set(store.key, started);
+    release();
     return signal ? detachOnAbort(started, signal) : started;
   }
   return {
@@ -464,18 +474,28 @@ function resolveStorePath(filePath) {
 }
 
 // src/store-codex.ts
-function readFile(resolved) {
-  if (!fs.existsSync(resolved)) return null;
+function readOutcome(resolved) {
+  if (!fs.existsSync(resolved)) return { kind: "missing" };
+  let text;
   try {
-    const parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    text = fs.readFileSync(resolved, "utf8");
   } catch {
-    return null;
+    return { kind: "unreadable" };
   }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? { kind: "ok", file: parsed } : { kind: "invalid" };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+function readFile(resolved) {
+  const outcome = readOutcome(resolved);
+  return outcome.kind === "ok" ? outcome.file : null;
 }
 function writeAtomic(resolved, content) {
   fs.mkdirSync(path__default.default.dirname(resolved), { recursive: true, mode: 448 });
-  const tmp = `${resolved}.${process.pid}.tmp`;
+  const tmp = `${resolved}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
   try {
     fs.writeFileSync(tmp, JSON.stringify(content, null, 2), { mode: 384 });
     fs.renameSync(tmp, resolved);
@@ -524,7 +544,14 @@ function codexAuthStore(filePath, options = {}) {
     key: resolved,
     read,
     write(next) {
-      const existing = readFile(resolved) ?? {};
+      const outcome = readOutcome(resolved);
+      if (outcome.kind !== "ok" && outcome.kind !== "missing") {
+        const why = outcome.kind === "unreadable" ? "it exists but could not be read" : "it exists but is not valid JSON \u2014 possibly a truncated or partially written file";
+        throw new StoreWriteRefusedError(
+          `Refusing to write ${resolved}: ${why}, so the fields this store does not own \u2014 an API key, another provider's credentials \u2014 cannot be preserved and would be dropped. Fix the file's ownership or permissions, restore it, or delete it if you are sure it holds nothing else. \`fileTokenStore\` with a path of your own avoids sharing entirely.`
+        );
+      }
+      const existing = outcome.kind === "ok" ? outcome.file : {};
       const previous = (existing.tokens ?? void 0) || void 0;
       const refresh = next.refresh || previous?.refresh_token;
       const accountId = next.accountId ?? previous?.account_id;
@@ -595,7 +622,7 @@ function fileTokenStore(filePath) {
     read,
     write(tokens) {
       fs.mkdirSync(path__default.default.dirname(resolved), { recursive: true, mode: 448 });
-      const tmp = `${resolved}.${process.pid}.tmp`;
+      const tmp = `${resolved}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
       try {
         fs.writeFileSync(tmp, JSON.stringify(tokens, null, 2), { mode: 384 });
         fs.renameSync(tmp, resolved);

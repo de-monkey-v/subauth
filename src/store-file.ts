@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -65,7 +66,10 @@ export function fileTokenStore(filePath: string): TokenStore {
 
       // Write to a pid-suffixed temp file and rename: concurrent writers never
       // share a temp path, and readers only ever see a complete file.
-      const tmp = `${resolved}.${process.pid}.tmp`;
+      // PID alone is not unique: worker threads share it, and two workers writing
+      // the same path would clobber each other's temp file or hit ENOENT on the
+      // second rename — losing a rotated token. A random suffix separates them.
+      const tmp = `${resolved}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
       try {
         writeFileSync(tmp, JSON.stringify(tokens, null, 2), { mode: 0o600 });
         renameSync(tmp, resolved);

@@ -49,8 +49,25 @@ export type BrowserLoginOptions = {
   signal?: AbortSignal;
 };
 
+/**
+ * Anything interpolated into the callback page comes from the query string of
+ * whatever hit the loopback port, which is not necessarily the identity
+ * provider. Escaping it keeps a crafted `?error_description=<script>...` from
+ * executing on a localhost origin while the listener is open.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function page(message: string): string {
-  return `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif">${message}</body>`;
+  return `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif">${escapeHtml(
+    message,
+  )}</body>`;
 }
 
 /**
@@ -96,6 +113,12 @@ export async function loginWithBrowser(options: BrowserLoginOptions): Promise<Au
       const value = url.searchParams.get("code");
 
       if (failure) {
+        // The provider echoes `state` on failure too, so an error arriving
+        // without the one we issued did not come from the flow we started.
+        if (url.searchParams.get("state") !== state) {
+          response.writeHead(400).end("Not found");
+          return;
+        }
         finish(400, `Login failed: ${failure}`, new LoginFailedError(`login failed: ${failure}`));
         return;
       }

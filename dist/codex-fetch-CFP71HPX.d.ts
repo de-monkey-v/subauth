@@ -1,4 +1,4 @@
-import { A as AuthStatus, D as DeviceAuth, a as DevicePoll, T as TokenStore, F as FetchLike, C as Clock, S as Sleep, L as Logger } from './types-DNqSt5Ln.mjs';
+import { A as AuthStatus, D as DeviceAuth, a as DevicePoll, T as TokenStore, F as FetchLike, C as Clock, S as Sleep, L as Logger } from './types-zJpjsZ_O.js';
 
 /** The only value in this package that carries a token out to the caller. */
 type AccessGrant = {
@@ -20,6 +20,8 @@ type ChatGPTAuthOptions = {
         attempts: number;
         delayMs: number;
     };
+    /** Deadline for a single token request. Defaults to `DEFAULT_TIMEOUT_MS`. */
+    timeoutMs?: number;
 };
 interface ChatGPTAuth {
     /** Valid access token, refreshing first if expiry is near. Throws if not logged in. */

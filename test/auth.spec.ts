@@ -258,7 +258,13 @@ describe("getFreshAccess — rotation loss recovery", () => {
     expect(clear).not.toHaveBeenCalled();
   });
 
-  it("gives up and clears the session when no sibling token appears", async () => {
+  it("gives up without clearing when no sibling token appears", async () => {
+    // This used to assert the opposite, and that assertion described a defect.
+    // Recovery gives up after a bounded wait, but a sibling's token round trip
+    // has no such bound: clearing here makes that sibling's compare-and-swap
+    // see a logged-out store and discard the credential the server just issued.
+    // The file ends up empty while a live session is stranded server-side —
+    // strictly worse than the repeated error the caller gets instead.
     const store = memoryTokenStore(expiring());
     const clear = vi.spyOn(store, "clear");
     const auth = createChatGPTAuth({
@@ -270,7 +276,10 @@ describe("getFreshAccess — rotation loss recovery", () => {
     });
 
     await expect(auth.getFreshAccess()).rejects.toBeInstanceOf(InvalidGrantError);
-    expect(clear).toHaveBeenCalledTimes(1);
+    expect(clear).not.toHaveBeenCalled();
+    // The spent token stays put: a slow sibling can still land its write on top
+    // of it, and an explicit `logout()` is how a session gets cleared on purpose.
+    expect(store.read()).toMatchObject({ refresh: "refresh-old" });
   });
 
   it("preserves the stored token when the failure is not invalid_grant", async () => {

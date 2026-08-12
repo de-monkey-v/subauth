@@ -21,7 +21,7 @@ is enforced, not just intended: `package.json` carries `"private": true`, so
 `npm publish` refuses. Installing from a git tag is unaffected.
 
 ```bash
-pnpm add github:de-monkey-v/subauth#v0.3.0
+pnpm add github:de-monkey-v/subauth#v0.4.0
 ```
 
 `dist/` is committed, so installation needs no build step and no build-script
@@ -89,7 +89,7 @@ Three things worth knowing:
   called automatically when a refresh token turns out to be revoked, which is
   why it must neither delete the file nor throw.
 
-Two limits worth knowing before you rely on this:
+Three limits worth knowing before you rely on this:
 
 - **No file lock.** Under deliberate contention roughly 0.15–0.25% of writes
   overwrite one the CLI made in the same instant. Both sides re-read on the next
@@ -100,6 +100,14 @@ Two limits worth knowing before you rely on this:
   directory — the rotated token is gone. The current process keeps working with
   its access token and a warning is logged; the next one has to log in again.
   This is inherent to rotation, not specific to this store.
+- **A lost rotation race surfaces as a repeated error, not a logout.** When two
+  processes refresh at once the loser waits for the winner's write and adopts
+  it. If the winner is slower than that wait, the loser gives up and throws
+  `InvalidGrantError` — it does **not** clear the store, because the winner may
+  still be about to save a perfectly good token, and clearing would make it
+  discard that token instead. So a spent refresh token can sit on disk producing
+  the same error until someone writes over it or calls `logout()`. That is the
+  deliberate trade: a repeated, coded error beats silently losing a live login.
 
 Logging in, once, from a CLI:
 

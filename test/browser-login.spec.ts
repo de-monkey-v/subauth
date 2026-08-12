@@ -134,7 +134,11 @@ describe("loginWithBrowser", () => {
       port: 0,
       openBrowser: () => {},
       onVerificationUrl: (url) => {
-        void hitCallback(callbackFor(url, { error_description: "user cancelled" }));
+        // A real provider echoes `state` on the error redirect too; without it
+        // the callback is not from the flow we started and is now ignored.
+        void hitCallback(
+          callbackFor(url, { error_description: "user cancelled", state: "__valid__" }),
+        );
       },
       fetch: exchangeOk,
       now: () => NOW,

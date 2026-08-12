@@ -64,6 +64,13 @@ type FetchLike = (url: string, init: {
     method: string;
     headers: Record<string, string>;
     body: string;
+    /**
+     * Deadline for this request. Honouring it is optional for a custom
+     * transport but matters more than it looks: a sibling process recovering
+     * from a rotated token gives up after a bounded wait, so an unbounded
+     * request here can outlive the window in which its result is still usable.
+     */
+    signal?: AbortSignal;
 }) => Promise<FetchLikeResponse>;
 type FetchLikeResponse = {
     ok: boolean;

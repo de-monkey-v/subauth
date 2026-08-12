@@ -1,11 +1,11 @@
-import { mkdtempSync, rmSync, statSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChatGPTAuth } from "../src/auth";
 import { loginWithBrowser } from "../src/browser-login";
 import { createCodexFetch, type AccessSource } from "../src/codex-fetch";
-import { TokenRequestError } from "../src/errors";
+import { InvalidGrantError, TokenRequestError } from "../src/errors";
 import { fileTokenStore } from "../src/store-file";
 import { memoryTokenStore } from "../src/store-memory";
 import type { FetchLike, FetchLikeResponse, OAuthTokens } from "../src/types";
@@ -487,4 +487,180 @@ describe("id token guard — strict base64url", () => {
     const { isParseableJwt } = await import("../src/claims");
     expect(isParseableJwt(`h=.${claims}.s+`)).toBe(true);
   });
+});
+
+/**
+ * Independent audit reproduced a race that destroys the session outright.
+ *
+ * Two processes refresh at once. The winner's token round trip has no deadline;
+ * the loser's rotation recovery gives up after a fixed budget. When the winner
+ * is slower than that budget the loser used to `clear()`, and the winner's
+ * compare-and-swap then saw a logged-out store and threw away the credential the
+ * server had just issued — empty file, live session stranded, re-login required.
+ * Observed at 3400ms of winner delay; a suspended laptop or a GC pause is enough.
+ */
+describe("rotation race — a slow winner must not lose the session", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "subauth-race-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keeps the stored session so a late winner can still save its token", async () => {
+    // One file, two auth objects: the loser fails first, the winner writes after.
+    const store = fileTokenStore(path.join(dir, "tokens.json"));
+    store.write(expiring());
+
+    const loser = createChatGPTAuth({
+      store,
+      fetch: async () => response(400, { error: "invalid_grant" }),
+      now: () => NOW,
+      sleep: async () => {},
+      rotationRetry: { attempts: 3, delayMs: 0 },
+    });
+
+    await expect(loser.getFreshAccess()).rejects.toBeInstanceOf(InvalidGrantError);
+    // The store still holds a session — this is what the winner's CAS reads.
+    expect(store.read()).toMatchObject({ refresh: "refresh-old" });
+
+    const winner = createChatGPTAuth({
+      store,
+      fetch: async () =>
+        response(200, { access_token: "access-won", refresh_token: "refresh-won", expires_in: 3600 }),
+      now: () => NOW,
+      sleep: async () => {},
+    });
+
+    await expect(winner.getFreshAccess()).resolves.toMatchObject({ access: "access-won" });
+    expect(store.read()).toMatchObject({ access: "access-won", refresh: "refresh-won" });
+  });
+
+  it("gives the token request a deadline so the winner's delay is bounded", async () => {
+    // A transport that never settles. Without a signal this hangs forever, and
+    // the loser's bounded recovery becomes meaningless.
+    const store = fileTokenStore(path.join(dir, "tokens.json"));
+    store.write(expiring());
+
+    let sawSignal: AbortSignal | undefined;
+    const auth = createChatGPTAuth({
+      store,
+      fetch: async (_url, init) => {
+        sawSignal = init.signal;
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+      now: () => NOW,
+      sleep: async () => {},
+      timeoutMs: 30,
+    });
+
+    await expect(auth.getFreshAccess()).rejects.toThrow();
+    expect(sawSignal).toBeInstanceOf(AbortSignal);
+    expect(sawSignal!.aborted).toBe(true);
+  });
+});
+
+/**
+ * A file that cannot be read is not an absent file. `readFile` collapsed
+ * "missing", "unreadable" and "not JSON" into null, and `write` then rebuilt the
+ * file from `{}` — dropping the API key and every other provider's credentials
+ * sitting beside the session. The rename succeeds regardless of the old file's
+ * mode, so nothing else stopped it.
+ */
+describe("codexAuthStore — an unreadable file must not be overwritten", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "subauth-eacces-"));
+    file = path.join(dir, "auth.json");
+  });
+
+  afterEach(() => {
+    try {
+      chmodSync(file, 0o600);
+    } catch {
+      // Already gone or already writable; the rm below is what matters.
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("refuses the write and leaves sibling credentials intact", async () => {
+    const { codexAuthStore } = await import("../src/store-codex");
+    const { StoreWriteRefusedError } = await import("../src/errors");
+    const { writeFileSync, readFileSync } = await import("node:fs");
+
+    const jwt = (payload: unknown) =>
+      `h.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.s`;
+    const original = JSON.stringify({
+      OPENAI_API_KEY: "sk-sibling-credential",
+      some_other_provider: "keep-me",
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: jwt({ exp: Math.floor(NOW / 1000) + 3600 }),
+        refresh_token: "r1",
+        id_token: jwt({ chatgpt_account_id: "acct-1" }),
+        account_id: "acct-1",
+      },
+    });
+    writeFileSync(file, original, { mode: 0o600 });
+
+    const store = codexAuthStore(file, { now: () => NOW });
+    chmodSync(file, 0o000);
+
+    expect(() =>
+      store.write({
+        access: jwt({ exp: Math.floor(NOW / 1000) + 7200 }),
+        refresh: "r2",
+        accountId: "acct-1",
+        idToken: jwt({ chatgpt_account_id: "acct-1" }),
+        expires: NOW + 7200_000,
+      }),
+    ).toThrow(StoreWriteRefusedError);
+
+    chmodSync(file, 0o600);
+    expect(readFileSync(file, "utf8")).toBe(original);
+  });
+});
+
+/**
+ * codex review, second machine: two more ways the concurrency and
+ * file-handling contracts leaked.
+ */
+describe("codex review — in-flight registration and temp naming", () => {
+  it("registers the in-flight refresh before the exchange can be re-entered", async () => {
+    // A transport that calls back into getFreshAccess synchronously used to find
+    // an empty registry and start a second exchange. Two concurrent exchanges of
+    // one refresh token is rotation reuse, which the server answers by revoking.
+    const store = memoryTokenStore(expiring());
+    let exchanges = 0;
+    let reentered: Promise<unknown> | undefined;
+
+    const auth = createChatGPTAuth({
+      store,
+      fetch: async () => {
+        exchanges += 1;
+        reentered ??= auth.getFreshAccess().catch(() => undefined);
+        return response(200, {
+          access_token: "access-new",
+          refresh_token: "refresh-new",
+          expires_in: 3600,
+        });
+      },
+      now: () => NOW,
+      sleep: async () => {},
+    });
+
+    await auth.getFreshAccess();
+    await reentered;
+    expect(exchanges).toBe(1);
+  });
+
+  // Temp-name uniqueness is verified out-of-process by AC13: worker threads
+  // share a pid, which is the only way to actually exercise the collision.
 });

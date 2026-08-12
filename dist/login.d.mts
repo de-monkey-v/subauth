@@ -1,4 +1,4 @@
-import { T as TokenStore, F as FetchLike, C as Clock, L as Logger, A as AuthStatus } from './types-DNqSt5Ln.mjs';
+import { T as TokenStore, F as FetchLike, C as Clock, L as Logger, A as AuthStatus } from './types-zJpjsZ_O.mjs';
 
 /**
  * Open a URL in the platform browser. Best effort and dependency-free — when it

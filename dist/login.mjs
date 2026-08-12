@@ -121,6 +121,7 @@ function extractAccountId(tokens) {
 
 // src/protocol.ts
 var DEFAULT_USER_AGENT = "subauth";
+var DEFAULT_TIMEOUT_MS = 1e4;
 var globalFetchAdapter = async (url, init) => {
   const response = await globalThis.fetch(url, init);
   return {
@@ -135,7 +136,8 @@ function resolveProtocolConfig(partial = {}) {
     fetch: partial.fetch ?? globalFetchAdapter,
     userAgent: partial.userAgent ?? DEFAULT_USER_AGENT,
     clientId: partial.clientId ?? CLIENT_ID,
-    issuer: partial.issuer ?? ISSUER
+    issuer: partial.issuer ?? ISSUER,
+    timeoutMs: partial.timeoutMs ?? DEFAULT_TIMEOUT_MS
   };
 }
 function buildAuthorizeUrl(config, params) {
@@ -194,7 +196,8 @@ async function tokenRequest(config, body) {
       "Content-Type": "application/x-www-form-urlencoded",
       "User-Agent": config.userAgent
     },
-    body: body.toString()
+    body: body.toString(),
+    signal: AbortSignal.timeout(config.timeoutMs)
   });
   if (!response.ok) {
     const detail = await safeText(response);
@@ -209,9 +212,12 @@ async function tokenRequest(config, body) {
   } catch (error) {
     throw new TokenRequestError(
       response.status,
+      // `sent` here too: a decoder error quotes the bytes it choked on, and a
+      // proxy that echoed our request body puts the refresh token among them.
       `token endpoint returned a non-JSON response: ${scrubDetail(
         error instanceof Error ? error.message : String(error),
-        120
+        120,
+        sent
       )}`
     );
   }
@@ -268,8 +274,13 @@ function openSystemBrowser(url) {
   } catch {
   }
 }
+function escapeHtml(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
 function page(message) {
-  return `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif">${message}</body>`;
+  return `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif">${escapeHtml(
+    message
+  )}</body>`;
 }
 async function loginWithBrowser(options) {
   const logger = options.logger ?? {};
@@ -293,6 +304,10 @@ async function loginWithBrowser(options) {
       const failure = url.searchParams.get("error_description") ?? url.searchParams.get("error");
       const value = url.searchParams.get("code");
       if (failure) {
+        if (url.searchParams.get("state") !== state) {
+          response.writeHead(400).end("Not found");
+          return;
+        }
         finish(400, `Login failed: ${failure}`, new LoginFailedError(`login failed: ${failure}`));
         return;
       }

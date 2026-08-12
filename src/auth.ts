@@ -30,6 +30,8 @@ export type ChatGPTAuthOptions = {
   issuer?: string;
   /** Backoff used when recovering from a lost refresh-token rotation race. */
   rotationRetry?: { attempts: number; delayMs: number };
+  /** Deadline for a single token request. Defaults to `DEFAULT_TIMEOUT_MS`. */
+  timeoutMs?: number;
 };
 
 export interface ChatGPTAuth {
@@ -115,8 +117,11 @@ export function createChatGPTAuth(options: ChatGPTAuthOptions): ChatGPTAuth {
   const logger: Logger = options.logger ?? {};
   // Wide enough to outlast a sibling's slow token round-trip: the recovery only
   // runs after an invalid_grant, and giving up early forces a re-login that
-  // waiting would have avoided.
-  const rotationRetry = options.rotationRetry ?? { attempts: 8, delayMs: 400 };
+  // waiting would have avoided. Sized against the token request deadline
+  // (DEFAULT_TIMEOUT_MS) plus the write behind it, so a sibling that is merely
+  // slow — a suspended laptop, a saturated CPU, a GC pause — is still waited
+  // out rather than treated as a revoked session.
+  const rotationRetry = options.rotationRetry ?? { attempts: 30, delayMs: 400 };
   const config: ProtocolConfig = resolveProtocolConfig(options);
 
   function isUsable(tokens: OAuthTokens): boolean {
@@ -151,9 +156,20 @@ export function createChatGPTAuth(options: ChatGPTAuthOptions): ChatGPTAuth {
       if (error instanceof InvalidGrantError) {
         const recovered = await recoverFromRotation(previous);
         if (recovered) return recovered;
-        // The session is revoked server-side. Drop the dead token so the
-        // consumer's UI shows "logged out" instead of retrying forever.
-        store.clear();
+        // Deliberately *not* clearing here. `invalid_grant` says this refresh
+        // token is spent; it does not say the session is dead. The usual cause
+        // is a sibling that rotated it and has not written the replacement yet
+        // — recovery gives up after a fixed budget, but the sibling's round
+        // trip has no such bound. Clearing would make that sibling's
+        // compare-and-swap see a logged-out store and discard the credential
+        // the server just issued: the file ends up empty while a live session
+        // is stranded server-side, and only a fresh login repairs it.
+        //
+        // Leaving the spent token in place costs a repeated error the caller
+        // already has to handle, and the first successful write replaces it.
+        // A genuinely revoked session keeps failing with the same coded error,
+        // which is the honest signal; a wrongly cleared one loses a working
+        // login silently. `logout()` remains the way to clear on purpose.
       }
       throw error;
     }
@@ -201,11 +217,25 @@ export function createChatGPTAuth(options: ChatGPTAuthOptions): ChatGPTAuth {
     const pending = inFlight.get(store.key);
     if (pending) return signal ? detachOnAbort(pending, signal) : pending;
 
-    const started: Promise<AccessGrant> = refreshOnce(tokens).finally(() => {
-      // Only clear our own entry: a later refresh may already have replaced it.
-      if (inFlight.get(store.key) === started) inFlight.delete(store.key);
+    // Register *before* the exchange starts, not after. Calling `refreshOnce`
+    // first runs it synchronously up to its first await, and a transport that
+    // re-enters `getFreshAccess` in that window would find an empty registry
+    // and start a second exchange — which is rotation reuse, and the server
+    // answers that by revoking the session. Gating on an already-resolved
+    // promise defers the exchange to a microtask, so the entry is always in
+    // place before anything can observe it.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    const started: Promise<AccessGrant> = gate
+      .then(() => refreshOnce(tokens))
+      .finally(() => {
+        // Only clear our own entry: a later refresh may already have replaced it.
+        if (inFlight.get(store.key) === started) inFlight.delete(store.key);
+      });
     inFlight.set(store.key, started);
+    release();
     // Detached the same way a joiner is, so the abort contract does not depend
     // on whether this caller happened to be the one that started the refresh.
     return signal ? detachOnAbort(started, signal) : started;

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expiryOf, extractAccountId, isParseableJwt } from "./claims";
@@ -24,21 +25,52 @@ type CodexAuthFile = {
   [extra: string]: unknown;
 };
 
-function readFile(resolved: string): CodexAuthFile | null {
-  if (!existsSync(resolved)) return null;
+/**
+ * Why this is not just `CodexAuthFile | null`.
+ *
+ * "No file", "cannot read the file", and "the file is not JSON" are three
+ * different situations, and a writer has to tell them apart. Collapsing them
+ * loses the one case where the file's *contents* are intact and this process
+ * simply cannot see them — a `sudo codex` run leaving root-owned credentials,
+ * an ACL, a transient I/O error. Treating that as "nothing here" and writing
+ * anyway drops every field this store does not own, including the API key,
+ * because the rename succeeds regardless of the old file's permissions.
+ */
+type ReadOutcome =
+  | { kind: "missing" }
+  | { kind: "unreadable" }
+  | { kind: "invalid" }
+  | { kind: "ok"; file: CodexAuthFile };
+
+function readOutcome(resolved: string): ReadOutcome {
+  if (!existsSync(resolved)) return { kind: "missing" };
+  let text: string;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(resolved, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as CodexAuthFile)
-      : null;
+    text = readFileSync(resolved, "utf8");
   } catch {
-    return null;
+    return { kind: "unreadable" };
   }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? { kind: "ok", file: parsed as CodexAuthFile }
+      : { kind: "invalid" };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+
+function readFile(resolved: string): CodexAuthFile | null {
+  const outcome = readOutcome(resolved);
+  return outcome.kind === "ok" ? outcome.file : null;
 }
 
 function writeAtomic(resolved: string, content: CodexAuthFile): void {
   mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
-  const tmp = `${resolved}.${process.pid}.tmp`;
+  // PID alone is not unique: worker threads share it, and two workers writing
+  // the same path would clobber each other's temp file or hit ENOENT on the
+  // second rename — losing a rotated token. A random suffix separates them.
+  const tmp = `${resolved}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   try {
     writeFileSync(tmp, JSON.stringify(content, null, 2), { mode: 0o600 });
     renameSync(tmp, resolved);
@@ -150,7 +182,25 @@ export function codexAuthStore(filePath: string, options: { now?: Clock } = {}):
     read,
 
     write(next: OAuthTokens): void {
-      const existing = readFile(resolved) ?? {};
+      // Refuse rather than corrupt, again. A file we cannot read is not an
+      // absent one: its other credentials are still in there, and a write built
+      // on `{}` would drop every one of them. `writeAtomic` renames over the
+      // target, so the old file's permissions do not stop it.
+      const outcome = readOutcome(resolved);
+      if (outcome.kind !== "ok" && outcome.kind !== "missing") {
+        const why =
+          outcome.kind === "unreadable"
+            ? "it exists but could not be read"
+            : "it exists but is not valid JSON — possibly a truncated or partially written file";
+        throw new StoreWriteRefusedError(
+          `Refusing to write ${resolved}: ${why}, so the fields this store does not own — an ` +
+            "API key, another provider's credentials — cannot be preserved and would be dropped. " +
+            "Fix the file's ownership or permissions, restore it, or delete it if you are sure " +
+            "it holds nothing else. `fileTokenStore` with a path of your own avoids sharing " +
+            "entirely.",
+        );
+      }
+      const existing = outcome.kind === "ok" ? outcome.file : {};
       const previous = (existing.tokens ?? undefined) || undefined;
 
       // Never persist a value `read()` would reject. `toTokens` can produce an
