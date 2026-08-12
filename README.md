@@ -16,10 +16,12 @@ plug it into an AI SDK provider, or call the API directly.
 
 ## Install
 
-Not published to npm, by design — see [personal use](docs/personal-use.md).
+Not published to npm, by design — see [personal use](docs/personal-use.md). That
+is enforced, not just intended: `package.json` carries `"private": true`, so
+`npm publish` refuses. Installing from a git tag is unaffected.
 
 ```bash
-pnpm add github:gyuhyeonLee/subauth#v0.1.0
+pnpm add github:de-monkey-v/subauth#v0.3.0
 ```
 
 `dist/` is committed, so installation needs no build step and no build-script
@@ -71,10 +73,13 @@ rotation — the same property the read-through store contract exists for.
 
 Three things worth knowing:
 
-- **Run `codex login` first.** This adapts an existing CLI session. It can
-  create the file, but the CLI also reads an id token from it for the account it
-  displays, so a file first written here may be usable by this package and not
-  by the CLI.
+- **Run `codex login` first.** This adapts an existing CLI session rather than
+  creating one. The CLI decodes an id token out of the file, and that field is
+  required, so a write without one is refused instead of producing a file the
+  CLI cannot read — which would cost it every other credential in there too. By
+  the same rule, a file whose id token the CLI could not parse reads back here
+  as logged out. To hold a session this package logs into itself, use
+  `fileTokenStore` with a path of your own.
 - **The format records no expiry**, so the deadline comes from the access
   token's own `exp` claim. A token that is not a decodable JWT is treated as
   logged out rather than assumed fresh. An API-key-mode file (`tokens: null`)
@@ -194,6 +199,20 @@ The consumer checks under `test/consumer/` run the built package from separate
 processes — CommonJS `require`, ESM `import`, and a node10/`lib: ["ES2022"]`
 TypeScript project — because that is what the unit tests structurally cannot
 cover.
+
+`pnpm verify` never touches your Codex login. Two of those checks (AC8, AC9) can
+only answer their question against a real `auth.json`, so they skip unless you
+ask for them:
+
+```bash
+SUBAUTH_LIVE_CODEX=1 pnpm test:consumer
+```
+
+Opted in, AC8 reads a copy of `~/.codex/auth.json` and asserts the original is
+byte-identical afterwards, and AC9 additionally starts a real `codex` process
+against that copy. AC9 skips on its own when the session is within an hour of
+expiry, since a refresh triggered there would rotate the token out from under the
+original file.
 
 ## License
 

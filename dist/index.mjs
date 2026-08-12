@@ -112,11 +112,19 @@ function decodeClaims(token) {
   if (!payload) return void 0;
   try {
     const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return decoded && typeof decoded === "object" ? decoded : void 0;
+    return decoded && typeof decoded === "object" && !Array.isArray(decoded) ? decoded : void 0;
   } catch {
     return void 0;
   }
 }
+function isParseableJwt(token) {
+  if (typeof token !== "string") return false;
+  const segments = token.split(".");
+  if (segments.length !== 3 || segments.some((segment) => segment === "")) return false;
+  if (!BASE64URL.test(segments[1])) return false;
+  return decodeClaims(token) !== void 0;
+}
+var BASE64URL = /^[A-Za-z0-9_-]+$/;
 function expiryOf(token) {
   const exp = decodeClaims(token)?.exp;
   return typeof exp === "number" && Number.isFinite(exp) ? exp * 1e3 : void 0;
@@ -248,7 +256,7 @@ function toTokens(response, now, previous) {
   const lifetime = Number.isFinite(seconds) && seconds > 0 ? seconds : 3600;
   const accountId = extractAccountId(response) ?? previous?.accountId;
   const sameAccount = previous?.accountId === void 0 || accountId === void 0 || previous.accountId === accountId;
-  const idToken = typeof response.id_token === "string" && response.id_token !== "" ? response.id_token : sameAccount ? previous?.idToken : void 0;
+  const idToken = isParseableJwt(response.id_token) ? response.id_token : sameAccount ? previous?.idToken : void 0;
   return {
     access: response.access_token,
     refresh: rotated ?? previous?.refresh ?? "",
@@ -489,20 +497,18 @@ function codexAuthStore(filePath, options = {}) {
     if (typeof refresh !== "string" || refresh === "") return null;
     const expires = expiryOf(access);
     if (expires === void 0) return null;
+    if (!isParseableJwt(idToken)) return null;
     const stored = tokens.account_id;
     const accountId = typeof stored === "string" && stored !== "" ? stored : (
       // Older files omit the field; the claim is authoritative anyway, and
       // without an account id the backend rejects the request with no clue why.
-      extractAccountId({
-        id_token: typeof idToken === "string" ? idToken : void 0,
-        access_token: access
-      })
+      extractAccountId({ id_token: idToken, access_token: access })
     );
     return {
       access,
       refresh,
       ...accountId ? { accountId } : {},
-      ...typeof idToken === "string" && idToken !== "" ? { idToken } : {},
+      idToken,
       expires
     };
   }
@@ -518,14 +524,19 @@ function codexAuthStore(filePath, options = {}) {
       const accountId = next.accountId ?? previous?.account_id;
       const sameAccount = previous?.account_id === void 0 || accountId === void 0 || previous.account_id === accountId;
       const idToken = next.idToken ?? (sameAccount ? previous?.id_token : void 0);
-      if (typeof idToken !== "string" || idToken === "") {
+      if (!isParseableJwt(idToken)) {
         throw new StoreWriteRefusedError(
-          "Refusing to write a Codex auth.json without an id token: the Codex CLI requires that field and would fail to read the file, including any other credentials in it. Run `codex login` first, or use fileTokenStore with a path of your own."
+          "Refusing to write a Codex auth.json without a parseable id token: the Codex CLI requires that field to decode as a JWT and would fail to read the file, including any other credentials in it. Run `codex login` first, or use fileTokenStore with a path of your own."
         );
       }
       if (typeof refresh !== "string" || refresh === "") {
         throw new StoreWriteRefusedError(
           "Refusing to write a Codex auth.json without a refresh token: the session would be unusable and the previous refresh token would be lost."
+        );
+      }
+      if (expiryOf(next.access) === void 0) {
+        throw new StoreWriteRefusedError(
+          "Refusing to write a Codex auth.json whose access token carries no decodable expiry: this format records no expiry of its own, so the file would read back as logged out."
         );
       }
       writeAtomic(resolved, {

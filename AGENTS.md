@@ -36,6 +36,17 @@ These are not preferences. A change that breaks one of them is wrong.
 8. **Dual CJS+ESM output with `main`/`module`/`types` kept alongside `exports`.**
    A consumer compiles with `moduleResolution: Node` (node10), which never reads
    the exports map, and without `lib.dom`.
+9. **Never published to a registry.** `"private": true` stays in `package.json`.
+   The repository is public so its two consumers can install by tag without
+   credentials; a registry entry is a different thing entirely, and one that
+   cannot be taken back. Distribution is git tags only.
+10. **Nothing in `pnpm verify` may touch a real credential unprompted.** The
+    checks that read the machine's Codex login are gated behind
+    `SUBAUTH_LIVE_CODEX=1` and default to skipping, and any check that copies a
+    credential allocates its temp directory through `scratchDir` so no exit path
+    — including `process.exit()` and signals — can leak it. Checks must not
+    write to the repository they are checking either; AC7 cuts its tag in a
+    throwaway clone.
 
 ## Development
 
@@ -48,7 +59,12 @@ These are not preferences. A change that breaks one of them is wrong.
 - `test/consumer/` holds out-of-process checks against the built package, one
   per acceptance criterion. They are excluded from the root tsconfig on purpose:
   they compile against the *published* package from a directory where `subauth`
-  resolves.
+  resolves. Shared helpers live in `_support.cjs`.
+- AC8/AC9 need `SUBAUTH_LIVE_CODEX=1` to run at all. Opted in, AC9 hands a copy
+  of the live session to a real `codex` subprocess, so it refuses when the
+  access token is within an hour of expiry — a refresh there would rotate the
+  server-side token and strand the original file, which is invariant 5 breaking
+  in the one place it would be least expected.
 - `dist/` **is committed** so `github:` installs need no build step. Rebuild and
   stage it with any source change; `pnpm build && git diff --exit-code dist`
   must be clean before tagging.

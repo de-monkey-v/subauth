@@ -28,7 +28,12 @@ export { A as AuthStatus, D as DeviceAuth, a as DevicePoll, F as FetchLike, b as
  *
  * The format records no expiry, so the deadline comes from the access token's
  * own `exp` claim; a token that is not a decodable JWT is treated as logged out
- * rather than assumed fresh.
+ * rather than assumed fresh, and refused on write for the same reason.
+ *
+ * Read and write accept exactly the same files, deliberately. A session read
+ * from a file that could not be written back would refresh successfully — the
+ * server rotating its refresh token — and then fail to persist it, leaving the
+ * disk holding a token the server has already retired.
  *
  * Concurrency: writes are atomic, but a read-modify-write cannot be atomic
  * against another process without a lock. If the CLI writes between this

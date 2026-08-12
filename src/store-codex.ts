@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { expiryOf, extractAccountId } from "./claims";
+import { expiryOf, extractAccountId, isParseableJwt } from "./claims";
 import { StoreWriteRefusedError } from "./errors";
 import { resolveStorePath } from "./store-path";
 import type { Clock, OAuthTokens, TokenStore } from "./types";
@@ -83,7 +83,12 @@ function writeAtomic(resolved: string, content: CodexAuthFile): void {
  *
  * The format records no expiry, so the deadline comes from the access token's
  * own `exp` claim; a token that is not a decodable JWT is treated as logged out
- * rather than assumed fresh.
+ * rather than assumed fresh, and refused on write for the same reason.
+ *
+ * Read and write accept exactly the same files, deliberately. A session read
+ * from a file that could not be written back would refresh successfully — the
+ * server rotating its refresh token — and then fail to persist it, leaving the
+ * disk holding a token the server has already retired.
  *
  * Concurrency: writes are atomic, but a read-modify-write cannot be atomic
  * against another process without a lock. If the CLI writes between this
@@ -110,22 +115,29 @@ export function codexAuthStore(filePath: string, options: { now?: Clock } = {}):
     // guessing an expiry sends it to an API call that may fail cryptically.
     if (expires === undefined) return null;
 
+    // Read and write have to agree on what this file format accepts. A refresh
+    // response does not always carry a new id token, so the one on disk is what
+    // gets written back — and `write` refuses an id token the CLI cannot parse.
+    // Returning a session from such a file would refresh successfully, rotate
+    // the token server-side, then fail to persist it: the rotation is lost and
+    // the disk still holds the retired token, which is worse than logged out.
+    // The file is already unreadable to the CLI at this point; saying so sends
+    // the caller to a login that repairs it.
+    if (!isParseableJwt(idToken)) return null;
+
     const stored = tokens.account_id;
     const accountId =
       typeof stored === "string" && stored !== ""
         ? stored
         : // Older files omit the field; the claim is authoritative anyway, and
           // without an account id the backend rejects the request with no clue why.
-          extractAccountId({
-            id_token: typeof idToken === "string" ? idToken : undefined,
-            access_token: access,
-          });
+          extractAccountId({ id_token: idToken, access_token: access });
 
     return {
       access,
       refresh,
       ...(accountId ? { accountId } : {}),
-      ...(typeof idToken === "string" && idToken !== "" ? { idToken } : {}),
+      idToken,
       expires,
     };
   }
@@ -158,21 +170,36 @@ export function codexAuthStore(filePath: string, options: { now?: Clock } = {}):
       const idToken = next.idToken ?? (sameAccount ? previous?.id_token : undefined);
 
       // Refuse rather than corrupt. `id_token` is a required field of the CLI's
-      // own record, and typed: a missing one fails to parse, and so does one of
-      // the wrong type. Either way the failure is not "logged out" but a hard
-      // error that also takes down the API key and every other credential in
-      // the file. A refused write leaves a working file behind.
-      if (typeof idToken !== "string" || idToken === "") {
+      // own record, and typed: a missing one fails to parse, so does one of the
+      // wrong type, and so does a string that is not a JWT — the CLI decodes the
+      // field rather than storing it opaquely. Any of the three fails the same
+      // way, and the failure is not "logged out" but a hard error that also
+      // takes down the API key and every other credential in the file. A refused
+      // write leaves a working file behind.
+      if (!isParseableJwt(idToken)) {
         throw new StoreWriteRefusedError(
-          "Refusing to write a Codex auth.json without an id token: the Codex CLI requires " +
-            "that field and would fail to read the file, including any other credentials in " +
-            "it. Run `codex login` first, or use fileTokenStore with a path of your own.",
+          "Refusing to write a Codex auth.json without a parseable id token: the Codex CLI " +
+            "requires that field to decode as a JWT and would fail to read the file, including " +
+            "any other credentials in it. Run `codex login` first, or use fileTokenStore with " +
+            "a path of your own.",
         );
       }
       if (typeof refresh !== "string" || refresh === "") {
         throw new StoreWriteRefusedError(
           "Refusing to write a Codex auth.json without a refresh token: the session would be " +
             "unusable and the previous refresh token would be lost.",
+        );
+      }
+
+      // This format stores no expiry, so `read` recovers it from the access
+      // token's own `exp` claim and reports "logged out" when it cannot. Writing
+      // an access token without a decodable expiry would therefore overwrite a
+      // working file with one this store immediately rejects — the same trap the
+      // id token guard above exists for, on the other credential.
+      if (expiryOf(next.access) === undefined) {
+        throw new StoreWriteRefusedError(
+          "Refusing to write a Codex auth.json whose access token carries no decodable expiry: " +
+            "this format records no expiry of its own, so the file would read back as logged out.",
         );
       }
 

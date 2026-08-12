@@ -358,13 +358,37 @@ describe("codexAuthStore", () => {
 
   it("recovers the account id from claims when the field is absent", () => {
     // Without an account id the backend rejects requests with no useful signal.
+    // The id token here carries no account claim, so the value can only come
+    // from the access token — which is the fallback under test.
     const noField = codexFile();
     delete (noField.tokens as Record<string, unknown>)["account_id"];
-    delete (noField.tokens as Record<string, unknown>)["id_token"];
+    (noField.tokens as Record<string, unknown>)["id_token"] = jwt({ exp: EXP_SECONDS });
     writeFileSync(file, JSON.stringify(noField));
 
     expect(codexAuthStore(file).read()?.accountId).toBe("acct-jwt");
   });
+
+  // read() and write() have to accept the same files. write() refuses an id
+  // token the CLI cannot parse, and a refresh response does not always carry a
+  // replacement, so a session read from such a file would refresh — rotating
+  // the token server-side — and then fail to persist it. The rotation would be
+  // lost while the disk kept the retired token: strictly worse than logged out.
+  for (const [label, value] of [
+    ["absent", undefined],
+    ["not a JWT", "not-a-jwt"],
+    ["two segments", "aaa.bbb"],
+  ] as Array<[string, string | undefined]>) {
+    it(`reports logged out when the id token is ${label}`, () => {
+      const broken = codexFile();
+      if (value === undefined) delete (broken.tokens as Record<string, unknown>)["id_token"];
+      else (broken.tokens as Record<string, unknown>)["id_token"] = value;
+      writeFileSync(file, JSON.stringify(broken));
+
+      const store = codexAuthStore(file);
+      expect(store.read()).toBeNull();
+      expect(store.exists()).toBe(false);
+    });
+  }
 
   it("treats an API-key-mode file as logged out", () => {
     writeFileSync(file, JSON.stringify({ OPENAI_API_KEY: "sk-x", auth_mode: "apikey", tokens: null }));
@@ -460,6 +484,42 @@ describe("codexAuthStore — second verification round", () => {
       }),
     ).toThrow(StoreWriteRefusedError);
     expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  // The CLI does not store `id_token` opaquely — it decodes it, and the field is
+  // neither optional nor defaulted. A non-empty string that is not a JWT
+  // therefore fails exactly like a missing one, taking `OPENAI_API_KEY` and
+  // every other credential in the file down with it.
+  const unparseable: Array<[string, string]> = [
+    ["not a JWT at all", "not-a-jwt"],
+    ["two segments", "aaa.bbb"],
+    ["three segments with an empty middle", "aaa..ccc"],
+    ["three segments whose payload is not base64url JSON", "aaa.bbb.ccc"],
+  ];
+
+  for (const [label, idToken] of unparseable) {
+    it(`refuses an id token that is ${label}`, () => {
+      writeFileSync(file, JSON.stringify(codexFile()));
+      const store = codexAuthStore(file, { now: () => NOW });
+      const before = readFileSync(file, "utf8");
+
+      expect(() =>
+        store.write({ access: ACCESS, refresh: "r", accountId: "acct-1", idToken, expires: 0 }),
+      ).toThrow(StoreWriteRefusedError);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    });
+  }
+
+  it("still writes an id token the CLI can parse", () => {
+    // The negative control for the four cases above: the guard has to reject
+    // unparseable tokens without also rejecting real ones.
+    writeFileSync(file, JSON.stringify(codexFile()));
+    const store = codexAuthStore(file, { now: () => NOW });
+    const parseable = jwt({ exp: EXP_SECONDS, chatgpt_account_id: "acct-1" });
+
+    store.write({ access: ACCESS, refresh: "r", accountId: "acct-1", idToken: parseable, expires: 0 });
+
+    expect(JSON.parse(readFileSync(file, "utf8")).tokens.id_token).toBe(parseable);
   });
 
   it("clears without throwing when the file cannot be rewritten", () => {

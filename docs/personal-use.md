@@ -21,8 +21,20 @@ The API has no user dimension. `createChatGPTAuth` takes exactly one
 and no multi-account registry. Building a multi-tenant service on top of it
 requires doing something this package deliberately does not offer.
 
-The package is also not published to npm. A public package that resells
+The package is also not published to npm, and that is enforced rather than
+intended: `package.json` carries `"private": true`, which npm refuses to publish
+past even with `--force` or `--ignore-scripts`, and a `prepublishOnly` hook that
+fails, which also covers `--dry-run` — the one path `private` does not check.
+`test/consumer/ac12-publish-blocked.cjs` drives both against a throwaway
+registry and asserts no upload is attempted. A public package that resells
 subscription access is exactly the thing providers move against first.
+
+The repository being public is a different matter, and a deliberate one. The
+protocol constants here are already published in openai/codex, and reading the
+Codex CLI's `auth.json` is documented by OpenAI itself; a public repository adds
+no knowledge that a determined reader lacks. A registry entry would add
+something else — discovery, one-line installation by strangers, and a 72-hour
+window after which nothing can be taken back.
 
 ## The precedent
 

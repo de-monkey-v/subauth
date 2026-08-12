@@ -21,11 +21,43 @@ function decodeClaims(token?: string): TokenClaims | undefined {
   if (!payload) return undefined;
   try {
     const decoded: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return decoded && typeof decoded === "object" ? (decoded as TokenClaims) : undefined;
+    // An array is a JSON object to `typeof` but not to a typed deserializer, and
+    // `isParseableJwt` speaks for one of those.
+    return decoded && typeof decoded === "object" && !Array.isArray(decoded)
+      ? (decoded as TokenClaims)
+      : undefined;
   } catch {
     return undefined;
   }
 }
+
+/**
+ * Whether a value is a JWT strict enough for a consumer that *parses* it.
+ *
+ * `decodeClaims` is deliberately forgiving because a missing account id is not
+ * an error. This is the opposite question, asked on behalf of another program:
+ * the Codex CLI deserializes `id_token` into a typed field that is neither
+ * optional nor defaulted, so a value it cannot parse does not degrade its login
+ * — it makes the whole auth file unreadable, API key and all. Three non-empty
+ * segments with a base64url JSON payload is what that parse requires.
+ */
+export function isParseableJwt(token?: unknown): token is string {
+  if (typeof token !== "string") return false;
+  const segments = token.split(".");
+  if (segments.length !== 3 || segments.some((segment) => segment === "")) return false;
+  // `Buffer.from(x, "base64url")` also accepts standard base64 — `=` padding,
+  // `+`, `/` — and decodes it without complaint. A strict decoder rejects those,
+  // so accepting them here is how a file this package considers fine becomes one
+  // the CLI cannot read at all. Observed: a payload with `=` makes
+  // `codex login status` fail with "Invalid padding" and lose the API key
+  // sitting in the same file. Only the payload is checked because that is the
+  // segment the CLI decodes; padding elsewhere does not bother it.
+  if (!BASE64URL.test(segments[1] as string)) return false;
+  return decodeClaims(token) !== undefined;
+}
+
+/** The base64url alphabet: no `=` padding, no `+`, no `/`. */
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Read a JWT's expiry as epoch milliseconds.

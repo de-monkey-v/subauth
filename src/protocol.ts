@@ -1,7 +1,7 @@
 import { AUTHORIZE_ORIGINATOR, CLIENT_ID, ISSUER } from "./constants";
 import { InvalidGrantError, TokenRequestError } from "./errors";
 import { scrubDetail } from "./redact";
-import { extractAccountId } from "./claims";
+import { extractAccountId, isParseableJwt } from "./claims";
 import type { Clock, FetchLike, FetchLikeResponse, OAuthTokens } from "./types";
 
 /** Raw token endpoint response. */
@@ -246,12 +246,16 @@ export function toTokens(
   // it — a CLI sharing the same store — would report the wrong user.
   const sameAccount =
     previous?.accountId === undefined || accountId === undefined || previous.accountId === accountId;
-  const idToken =
-    typeof response.id_token === "string" && response.id_token !== ""
-      ? response.id_token
-      : sameAccount
-        ? previous?.idToken
-        : undefined;
+  // Preferring a *parseable* id token, not merely a present one. A store that
+  // shares its file with another program can refuse an id token that program
+  // cannot decode, and a refused write here would discard a refresh token the
+  // server has already rotated — losing the session outright. Keeping the
+  // previous id token is both safe and accurate: it identifies the same account.
+  const idToken = isParseableJwt(response.id_token)
+    ? response.id_token
+    : sameAccount
+      ? previous?.idToken
+      : undefined;
 
   return {
     access: response.access_token,

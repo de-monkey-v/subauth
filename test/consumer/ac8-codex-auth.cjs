@@ -7,10 +7,11 @@
  * rotates nothing — but it writes, and writing to the original would be
  * meddling with credentials the CLI is currently using.
  *
- * When no Codex login exists on this machine the check reports that and exits
- * successfully: the adapter's behaviour is covered by unit tests against
- * synthetic files, and this one exists to confirm the *real* shape still
- * matches. A machine without the CLI cannot answer that question either way.
+ * Opt-in via SUBAUTH_LIVE_CODEX=1. Unit tests cover the adapter against
+ * synthetic files; this one exists to confirm the *real* shape still matches,
+ * which is only worth asking on a machine whose owner asked for it. Someone who
+ * cloned this repository and ran `pnpm verify` did not ask to have their own
+ * ChatGPT session read and copied.
  */
 "use strict";
 
@@ -19,11 +20,16 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+const { LIVE_ENV, liveCodexEnabled, scratchDir } = require("./_support.cjs");
 const { codexAuthStore, createChatGPTAuth } = require("../../dist/index.js");
 
 const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const original = path.join(codexHome, "auth.json");
 
+if (!liveCodexEnabled()) {
+  console.log(`AC8 SKIPPED: set ${LIVE_ENV}=1 to check against the Codex login on this machine`);
+  process.exit(0);
+}
 if (!fs.existsSync(original)) {
   console.log(`AC8 SKIPPED: no Codex login at ${original}`);
   process.exit(0);
@@ -35,7 +41,10 @@ if (!fs.existsSync(original)) {
 const originalBytes = fs.readFileSync(original);
 const originalMode = fs.statSync(original).mode;
 
-const work = fs.mkdtempSync(path.join(os.tmpdir(), "subauth-ac8-"));
+// Not `mkdtempSync`: this directory is about to hold a copy of a live
+// credential, so it has to be removed on every exit path, not just the happy
+// one. See `_support.cjs`.
+const work = scratchDir("subauth-ac8-");
 const copy = path.join(work, "auth.json");
 
 try {
@@ -125,6 +134,4 @@ try {
 } catch (error) {
   console.error("AC8 FAILED:", error && error.message);
   process.exitCode = 1;
-} finally {
-  fs.rmSync(work, { recursive: true, force: true });
 }

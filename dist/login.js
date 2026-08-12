@@ -99,11 +99,19 @@ function decodeClaims(token) {
   if (!payload) return void 0;
   try {
     const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return decoded && typeof decoded === "object" ? decoded : void 0;
+    return decoded && typeof decoded === "object" && !Array.isArray(decoded) ? decoded : void 0;
   } catch {
     return void 0;
   }
 }
+function isParseableJwt(token) {
+  if (typeof token !== "string") return false;
+  const segments = token.split(".");
+  if (segments.length !== 3 || segments.some((segment) => segment === "")) return false;
+  if (!BASE64URL.test(segments[1])) return false;
+  return decodeClaims(token) !== void 0;
+}
+var BASE64URL = /^[A-Za-z0-9_-]+$/;
 function accountIdFrom(token) {
   const claims = decodeClaims(token);
   if (!claims) return void 0;
@@ -235,7 +243,7 @@ function toTokens(response, now, previous) {
   const seconds = Number(response.expires_in);
   const lifetime = Number.isFinite(seconds) && seconds > 0 ? seconds : 3600;
   const accountId = extractAccountId(response) ?? previous?.accountId;
-  const idToken = typeof response.id_token === "string" && response.id_token !== "" ? response.id_token : previous?.idToken ;
+  const idToken = isParseableJwt(response.id_token) ? response.id_token : previous?.idToken ;
   return {
     access: response.access_token,
     refresh: rotated ?? previous?.refresh ?? "",

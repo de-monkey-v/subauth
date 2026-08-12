@@ -359,3 +359,132 @@ describe("getFreshAccess — joining an in-flight refresh", () => {
     release(response(200, { access_token: "access-new", refresh_token: "r", expires_in: 3600 }));
   });
 });
+
+/**
+ * Second review round: "never persist a value `read()` would reject".
+ *
+ * The id-token guard closed one half of this. These cover the two paths the
+ * review found still open, both of which end the same way — a refresh succeeds,
+ * the server rotates the refresh token, and the write that would have saved it
+ * is refused or produces a file that reads back as logged out.
+ */
+describe("write must not persist what read would reject", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "subauth-round2-"));
+    file = path.join(dir, "auth.json");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function jwt(payload: unknown): string {
+    const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    return `h.${body}.s`;
+  }
+
+  const EXP = Math.floor(NOW / 1000) + 3600;
+
+  function codexAuthFile() {
+    return {
+      OPENAI_API_KEY: "sk-not-ours",
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: jwt({ exp: EXP, chatgpt_account_id: "acct-1" }),
+        refresh_token: "r1",
+        id_token: jwt({ chatgpt_account_id: "acct-1" }),
+        account_id: "acct-1",
+      },
+    };
+  }
+
+  it("refuses an access token with no decodable expiry", async () => {
+    // This format stores no expiry; read() recovers it from the token's `exp`.
+    // Writing an opaque access token replaced a working file with one the store
+    // then reported as logged out.
+    const { writeFileSync, readFileSync } = await import("node:fs");
+    const { codexAuthStore } = await import("../src/store-codex");
+    const { StoreWriteRefusedError } = await import("../src/errors");
+
+    writeFileSync(file, JSON.stringify(codexAuthFile()));
+    const store = codexAuthStore(file, { now: () => NOW });
+    const before = readFileSync(file, "utf8");
+
+    expect(() =>
+      store.write({
+        access: "opaque-token",
+        refresh: "r2",
+        accountId: "acct-1",
+        idToken: jwt({ chatgpt_account_id: "acct-1" }),
+        expires: NOW + 3600_000,
+      }),
+    ).toThrow(StoreWriteRefusedError);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("treats a JWT whose payload is an array as unparseable", async () => {
+    // `typeof [] === "object"`, so the guard accepted it while the CLI's typed
+    // deserializer would not — exactly the file the guard exists to prevent.
+    const { writeFileSync } = await import("node:fs");
+    const { codexAuthStore } = await import("../src/store-codex");
+
+    const broken = codexAuthFile();
+    broken.tokens.id_token = jwt([]);
+    writeFileSync(file, JSON.stringify(broken));
+
+    expect(codexAuthStore(file, { now: () => NOW }).read()).toBeNull();
+  });
+
+  it("keeps the previous id token when the response's is unparseable", async () => {
+    // Adopting an opaque id_token from the endpoint made the next write refuse,
+    // discarding a refresh token the server had already rotated.
+    const { toTokens } = await import("../src/protocol");
+
+    const good = jwt({ chatgpt_account_id: "acct-1" });
+    const tokens = toTokens(
+      { access_token: jwt({ exp: EXP }), refresh_token: "r9-rotated", id_token: "opaque-id" },
+      () => NOW,
+      { access: "old", refresh: "r1", accountId: "acct-1", idToken: good, expires: NOW },
+    );
+
+    expect(tokens.idToken).toBe(good);
+    expect(tokens.refresh).toBe("r9-rotated");
+  });
+});
+
+/**
+ * Independent verification found the id-token guard still admitted files the
+ * Codex CLI cannot read: `Buffer.from(x, "base64url")` accepts standard base64
+ * too. A payload segment carrying `=`, `+` or `/` was accepted here and made
+ * `codex login status` fail with "Invalid padding" — taking the API key in the
+ * same file down with it, which is the whole failure the guard exists to stop.
+ */
+describe("id token guard — strict base64url", () => {
+  const claims = Buffer.from(JSON.stringify({ chatgpt_account_id: "acct-1" })).toString("base64url");
+
+  it("accepts a payload that uses only the base64url alphabet", async () => {
+    const { isParseableJwt } = await import("../src/claims");
+    expect(isParseableJwt(`h.${claims}.s`)).toBe(true);
+  });
+
+  for (const [label, payload] of [
+    ["= padding", `${claims}=`],
+    ["+ from the standard alphabet", `${claims.slice(0, -1)}+`],
+    ["/ from the standard alphabet", `${claims.slice(0, -1)}/`],
+  ] as Array<[string, string]>) {
+    it(`rejects a payload with ${label}`, async () => {
+      const { isParseableJwt } = await import("../src/claims");
+      expect(isParseableJwt(`h.${payload}.s`)).toBe(false);
+    });
+  }
+
+  it("still tolerates padding outside the payload, which the CLI does too", async () => {
+    // Being stricter than the CLI would invent the opposite asymmetry: files it
+    // reads happily that this package calls logged out.
+    const { isParseableJwt } = await import("../src/claims");
+    expect(isParseableJwt(`h=.${claims}.s+`)).toBe(true);
+  });
+});
