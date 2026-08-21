@@ -1,9 +1,8 @@
-import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { expiryOf, extractAccountId, isParseableJwt } from "./claims";
 import { StoreWriteRefusedError } from "./errors";
 import { resolveStorePath } from "./store-path";
+import { writeJsonDurably } from "./store-write";
 import type { Clock, OAuthTokens, TokenStore } from "./types";
 
 /**
@@ -66,22 +65,7 @@ function readFile(resolved: string): CodexAuthFile | null {
 }
 
 function writeAtomic(resolved: string, content: CodexAuthFile): void {
-  mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
-  // PID alone is not unique: worker threads share it, and two workers writing
-  // the same path would clobber each other's temp file or hit ENOENT on the
-  // second rename — losing a rotated token. A random suffix separates them.
-  const tmp = `${resolved}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  try {
-    writeFileSync(tmp, JSON.stringify(content, null, 2), { mode: 0o600 });
-    renameSync(tmp, resolved);
-  } catch (error) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // The original failure is the one worth reporting.
-    }
-    throw error;
-  }
+  writeJsonDurably(resolved, content);
   try {
     chmodSync(resolved, 0o600);
   } catch {

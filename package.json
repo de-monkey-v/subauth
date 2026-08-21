@@ -42,7 +42,7 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:consumer": "node test/consumer/ac1-refresh.cjs && node test/consumer/ac2-entries.mjs && node test/consumer/ac3-codex-fetch.cjs && node test/consumer/ac4-no-leak.cjs && node test/consumer/ac5-node10.cjs && node test/consumer/ac6-dual-instance.mjs && node test/consumer/ac7-tag-install.cjs && node test/consumer/ac8-codex-auth.cjs && node test/consumer/ac9-codex-cli-roundtrip.cjs && node test/consumer/ac10-malformed-200.cjs && node test/consumer/ac11-scratch-cleanup.cjs && node test/consumer/ac12-publish-blocked.cjs && node test/consumer/ac13-worker-writes.cjs",
+    "test:consumer": "node test/consumer/ac1-refresh.cjs && node test/consumer/ac2-entries.mjs && node test/consumer/ac3-codex-fetch.cjs && node test/consumer/ac4-no-leak.cjs && node test/consumer/ac5-node10.cjs && node test/consumer/ac6-dual-instance.mjs && node test/consumer/ac7-tag-install.cjs && node test/consumer/ac8-codex-auth.cjs && node test/consumer/ac9-codex-cli-roundtrip.cjs && node test/consumer/ac10-malformed-200.cjs && node test/consumer/ac11-scratch-cleanup.cjs && node test/consumer/ac12-publish-blocked.cjs && node test/consumer/ac13-worker-writes.cjs && node test/consumer/ac14-durable-write.cjs",
     "verify": "pnpm typecheck && pnpm build && pnpm test && pnpm test:consumer"
   },
   "engines": {

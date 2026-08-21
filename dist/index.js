@@ -1,12 +1,12 @@
 'use strict';
 
-var crypto = require('crypto');
 var fs = require('fs');
-var path = require('path');
+var path2 = require('path');
+var crypto = require('crypto');
 
 function _interopDefault (e) { return e && e.__esModule ? e : { default: e }; }
 
-var path__default = /*#__PURE__*/_interopDefault(path);
+var path2__default = /*#__PURE__*/_interopDefault(path2);
 
 // src/constants.ts
 var CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -464,13 +464,76 @@ function createChatGPTAuth(options) {
   };
 }
 function resolveStorePath(filePath) {
-  const absolute = path__default.default.resolve(filePath);
+  const absolute = path2__default.default.resolve(filePath);
   if (!fs.existsSync(absolute)) return absolute;
   try {
     return fs.realpathSync(absolute);
   } catch {
     return absolute;
   }
+}
+function writeJsonDurably(resolved, value) {
+  const dir = path2__default.default.dirname(resolved);
+  const created = fs.mkdirSync(dir, { recursive: true, mode: 448 });
+  const tmp = `${resolved}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
+  let fd;
+  try {
+    fd = fs.openSync(tmp, "wx", 384);
+    fs.writeFileSync(fd, JSON.stringify(value, null, 2));
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = void 0;
+    fs.renameSync(tmp, resolved);
+  } catch (error) {
+    if (fd !== void 0) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+      }
+    }
+    if (!isAlreadyExists(error)) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+      }
+    }
+    throw error;
+  }
+  syncDirectory(dir);
+  syncNewDirectories(created, dir);
+}
+function syncNewDirectories(created, dir) {
+  if (created === void 0) return;
+  let entry = dir;
+  for (; ; ) {
+    const parent = path2__default.default.dirname(entry);
+    syncDirectory(parent);
+    if (entry === created || parent === entry) return;
+    entry = parent;
+  }
+}
+function unlinkDurably(resolved) {
+  try {
+    fs.unlinkSync(resolved);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return;
+  }
+  syncDirectory(path2__default.default.dirname(resolved));
+}
+function syncDirectory(dir) {
+  try {
+    const dirFd = fs.openSync(dir, "r");
+    try {
+      fs.fsyncSync(dirFd);
+    } finally {
+      fs.closeSync(dirFd);
+    }
+  } catch {
+  }
+}
+function isAlreadyExists(error) {
+  return typeof error === "object" && error !== null && error.code === "EEXIST";
 }
 
 // src/store-codex.ts
@@ -494,18 +557,7 @@ function readFile(resolved) {
   return outcome.kind === "ok" ? outcome.file : null;
 }
 function writeAtomic(resolved, content) {
-  fs.mkdirSync(path__default.default.dirname(resolved), { recursive: true, mode: 448 });
-  const tmp = `${resolved}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(content, null, 2), { mode: 384 });
-    fs.renameSync(tmp, resolved);
-  } catch (error) {
-    try {
-      fs.unlinkSync(tmp);
-    } catch {
-    }
-    throw error;
-  }
+  writeJsonDurably(resolved, content);
   try {
     fs.chmodSync(resolved, 384);
   } catch {
@@ -621,29 +673,14 @@ function fileTokenStore(filePath) {
     key: resolved,
     read,
     write(tokens) {
-      fs.mkdirSync(path__default.default.dirname(resolved), { recursive: true, mode: 448 });
-      const tmp = `${resolved}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-      try {
-        fs.writeFileSync(tmp, JSON.stringify(tokens, null, 2), { mode: 384 });
-        fs.renameSync(tmp, resolved);
-      } catch (error) {
-        try {
-          fs.unlinkSync(tmp);
-        } catch {
-        }
-        throw error;
-      }
+      writeJsonDurably(resolved, tokens);
       try {
         fs.chmodSync(resolved, 384);
       } catch {
       }
     },
     clear() {
-      try {
-        fs.unlinkSync(resolved);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
+      unlinkDurably(resolved);
     },
     exists() {
       return read() !== null;
