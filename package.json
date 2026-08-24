@@ -1,6 +1,6 @@
 {
   "name": "subauth",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Subscription auth for AI providers \u2014 use a personal ChatGPT subscription as an OpenAI-compatible credential. Personal, single-account use only.",
   "license": "MIT",
   "//publish-guards": "Publishing this to a registry would hand strangers a one-line way to route requests through a personal subscription \u2014 the pattern providers act against first \u2014 and npm's unpublish window is 72 hours. Two independent guards, because `private` is one deleted line: npm refuses a private package with EPRIVATE before any upload, and `prepublishOnly` fails the publish even if `private` is gone. Neither affects `github:` installs. See docs/personal-use.md.",

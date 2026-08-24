@@ -21,7 +21,7 @@ is enforced, not just intended: `package.json` carries `"private": true`, so
 `npm publish` refuses. Installing from a git tag is unaffected.
 
 ```bash
-pnpm add github:de-monkey-v/subauth#v0.4.0
+pnpm add github:de-monkey-v/subauth#v0.4.1
 ```
 
 `dist/` is committed, so installation needs no build step and no build-script
